@@ -36,7 +36,40 @@ DEFAULT_PASS_SCHEDULE = [50, 60, 65, 70, 75, 80, 85, 90, 55, 95]
 
 
 def _find_java() -> Optional[str]:
-    """Find java executable on the system."""
+    """Find java executable, preferring the highest available version (21+).
+
+    Strategy:
+    1. Scan Eclipse Adoptium / Temurin JDK installations on Windows and pick the
+       highest version (≥21) so we don't accidentally return Java 11 first.
+    2. Fall back to shutil.which("java") and the classic Unix paths.
+    """
+    import glob
+
+    def _version_from_path(p: str) -> int:
+        """Extract major version number from a JDK path like jdk-25.0.3..."""
+        import re
+        m = re.search(r"jdk-(\d+)", p)
+        return int(m.group(1)) if m else 0
+
+    # Windows: Eclipse Adoptium / Temurin installations (all versions)
+    win_patterns = [
+        r"C:\Program Files\Eclipse Adoptium\jdk-*\bin\java.exe",
+        r"C:\Program Files\Microsoft\jdk-*\bin\java.exe",
+        r"C:\Program Files\Java\jdk-*\bin\java.exe",
+        r"C:\Program Files\BellSoft\LibericaJDK-*\bin\java.exe",
+    ]
+    candidates = []
+    for pat in win_patterns:
+        candidates.extend(glob.glob(pat))
+
+    if candidates:
+        # Sort by extracted version descending, prefer ≥21
+        candidates.sort(key=_version_from_path, reverse=True)
+        best = candidates[0]
+        if _version_from_path(best) >= 21 and os.path.isfile(best):
+            return best
+
+    # Fall back to PATH and classic Unix paths
     java = shutil.which("java")
     if java:
         return java

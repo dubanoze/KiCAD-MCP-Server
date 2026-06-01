@@ -46,6 +46,39 @@ class IPCBackend(KiCADBackend):
         self._version: Optional[str] = None
         self._on_change_callbacks: List[Callable] = []
 
+    @staticmethod
+    def _windows_socket_candidates() -> list:
+        """Build a de-duplicated list of likely Windows KiCad IPC socket paths.
+
+        kipy's default is ``ipc://{tempfile.gettempdir()}\\kicad\\api.sock``. We
+        cover the standard temp roots AND a ``\\claude`` sub-dir variant, because a
+        sandbox-launched KiCad may set TMPDIR/TEMP to ``...\\Temp\\claude`` while this
+        backend's own gettempdir() resolves to ``...\\Temp``. Each candidate is tried
+        by the connect/ping loop; the first that answers wins.
+        """
+        import tempfile
+
+        roots = []
+        for ev in ("TMPDIR", "TEMP", "TMP"):
+            v = os.environ.get(ev)
+            if v:
+                roots.append(v)
+        roots.append(tempfile.gettempdir())
+        la = os.environ.get("LOCALAPPDATA")
+        if la:
+            roots.append(os.path.join(la, "Temp"))
+
+        candidates = []
+        seen = set()
+        for r in roots:
+            r = r.rstrip("\\/")
+            for base in (r, os.path.join(r, "claude")):
+                sock = f"ipc://{base}\\kicad\\api.sock"
+                if sock not in seen:
+                    seen.add(sock)
+                    candidates.append(sock)
+        return candidates
+
     def connect(self, socket_path: Optional[str] = None) -> bool:
         """
         Connect to running KiCAD instance via IPC.
@@ -78,6 +111,17 @@ class IPCBackend(KiCADBackend):
                     # XDG runtime directory (requires getuid, Unix only)
                     if hasattr(os, "getuid"):
                         socket_paths_to_try.append(f"ipc:///run/user/{os.getuid()}/kicad/api.sock")
+                else:
+                    # Windows: KiCad creates the socket under its OWN temp dir
+                    # (kipy default = gettempdir()\kicad\api.sock). When KiCad is
+                    # launched from a different environment than this MCP backend
+                    # (e.g. a sandbox that sets TMPDIR=...\Temp\claude), the two
+                    # temp dirs differ and auto-detect fails. The socket is a named
+                    # pipe and is NOT visible to os.path.exists/glob, so we cannot
+                    # probe the filesystem — instead we enumerate likely temp roots
+                    # (and their \claude sub-dir variant) and let the connect/ping
+                    # loop below pick the first that actually answers.
+                    socket_paths_to_try.extend(self._windows_socket_candidates())
 
                 # Auto-detect for all platforms (Windows uses named pipes, Unix uses sockets)
                 socket_paths_to_try.append(None)
