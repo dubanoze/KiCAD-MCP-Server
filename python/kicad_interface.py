@@ -474,6 +474,10 @@ class KiCADInterface:
             "add_mounting_hole": self.board_commands.add_mounting_hole,
             "add_text": self.board_commands.add_text,
             "add_board_text": self.board_commands.add_text,  # Alias for TypeScript tool
+            "set_layer_visibility": self.board_commands.set_layer_visibility,
+            "center_board_on_sheet": self.board_commands.center_board_on_sheet,
+            "add_board_cutout": self.board_commands.add_board_cutout,
+            "delete_pcb_shape": self.board_commands.delete_pcb_shape,
             # Component commands
             "route_pad_to_pad": self.routing_commands.route_pad_to_pad,
             "place_component": self._handle_place_component,
@@ -517,6 +521,7 @@ class KiCADInterface:
             "export_svg": self.export_commands.export_svg,
             "export_3d": self.export_commands.export_3d,
             "export_bom": self.export_commands.export_bom,
+            "import_pcb": self.export_commands.import_pcb,
             # Library commands (footprint management)
             "list_libraries": self.library_commands.list_libraries,
             "search_footprints": self.library_commands.search_footprints,

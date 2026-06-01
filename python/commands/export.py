@@ -603,6 +603,66 @@ class ExportCommands:
         with open(path, "w") as f:
             json.dump({"components": components}, f, indent=2)
 
+    def import_pcb(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """Import a non-KiCad PCB file (Altium, Eagle, PADS, etc.) using kicad-cli.
+
+        Params:
+            input_file  – path to the source file (.PcbDoc, .brd, .pcb, etc.)
+            output_file – path for the output .kicad_pcb (default: same dir, .kicad_pcb ext)
+            format      – hint: auto, altium, eagle, pads, cadstar, fabmaster, pcad,
+                          solidworks (default: auto)
+        """
+        import subprocess
+
+        input_file = params.get("input_file")
+        if not input_file or not os.path.exists(input_file):
+            return {"success": False, "message": f"Input file not found: {input_file}"}
+
+        output_file = params.get("output_file")
+        if not output_file:
+            base = os.path.splitext(input_file)[0]
+            output_file = base + "_imported.kicad_pcb"
+
+        fmt = params.get("format", "auto")
+
+        kicad_cli = self._find_kicad_cli()
+        if not kicad_cli:
+            return {"success": False, "message": "kicad-cli not found"}
+
+        cmd = [kicad_cli, "pcb", "import",
+               "--format", fmt,
+               "--report-format", "text",
+               "-o", output_file,
+               input_file]
+
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+            stdout = (result.stdout or "").strip()
+            stderr = (result.stderr or "").strip()
+            report = stdout or stderr
+
+            if result.returncode != 0:
+                return {
+                    "success": False,
+                    "message": f"kicad-cli import failed (rc={result.returncode})",
+                    "report": report,
+                }
+
+            exists = os.path.exists(output_file)
+            size = os.path.getsize(output_file) if exists else 0
+
+            return {
+                "success": True,
+                "message": f"Imported '{os.path.basename(input_file)}' → '{output_file}'",
+                "output_file": output_file,
+                "size_bytes": size,
+                "report": report,
+            }
+        except subprocess.TimeoutExpired:
+            return {"success": False, "message": "Import timed out after 120 s"}
+        except Exception as e:
+            return {"success": False, "message": f"Import error: {e}"}
+
     def _find_kicad_cli(self) -> Optional[str]:
         """Find kicad-cli executable in system PATH or common locations
 
@@ -621,11 +681,17 @@ class ExportCommands:
         system = platform.system()
 
         if system == "Windows":
+            user_local = os.path.expandvars(r"%LOCALAPPDATA%\Programs\KiCad")
             possible_paths = [
+                r"C:\Program Files\KiCad\10.0\bin\kicad-cli.exe",
                 r"C:\Program Files\KiCad\9.0\bin\kicad-cli.exe",
                 r"C:\Program Files\KiCad\8.0\bin\kicad-cli.exe",
+                r"C:\Program Files (x86)\KiCad\10.0\bin\kicad-cli.exe",
                 r"C:\Program Files (x86)\KiCad\9.0\bin\kicad-cli.exe",
                 r"C:\Program Files (x86)\KiCad\8.0\bin\kicad-cli.exe",
+                # Per-user installs (KiCad 10 default on Windows installs here)
+                os.path.join(user_local, r"10.0\bin\kicad-cli.exe"),
+                os.path.join(user_local, r"9.0\bin\kicad-cli.exe"),
             ]
         elif system == "Darwin":  # macOS
             possible_paths = [

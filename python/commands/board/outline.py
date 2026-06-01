@@ -494,6 +494,198 @@ class BoardOutlineCommands:
             layer,
         )
 
+    def add_board_cutout(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """Add an arbitrary polygon cutout to Edge.Cuts and optionally create a keepout
+        zone covering the same polygon on all copper layers.
+
+        Params:
+            points   – list of {x, y} vertices in order (mm), e.g. trapezoidal slot
+            unit     – "mm" (default)
+            keepout  – true (default) = also add a copper keepout zone on every layer
+            keepout_clearance – extra clearance around keepout polygon in mm (default 0.2)
+        """
+        if not self.board:
+            return {"success": False, "message": "No board is loaded"}
+
+        raw_pts = params.get("points", [])
+        unit = params.get("unit", "mm")
+        add_keepout = params.get("keepout", True)
+        keepout_clr = float(params.get("keepout_clearance", 0.2))
+
+        if len(raw_pts) < 3:
+            return {"success": False, "message": "Need at least 3 points for a cutout polygon"}
+
+        def to_nm(v):
+            return pcbnew.FromMM(v) if unit == "mm" else int(v)
+
+        pts_nm = [pcbnew.VECTOR2I(to_nm(p["x"]), to_nm(p["y"])) for p in raw_pts]
+
+        # --- Edge.Cuts polygon ---
+        edge_layer = pcbnew.Edge_Cuts
+        poly = pcbnew.PCB_SHAPE(self.board)
+        poly.SetShape(pcbnew.SHAPE_T_POLY)
+        poly.SetLayer(edge_layer)
+        poly.SetWidth(0)
+        pts = pcbnew.VECTOR_VECTOR2I()
+        for p in pts_nm:
+            pts.push_back(p)
+        poly.SetPolyPoints(pts)
+        # SHAPE_T_POLY is implicitly closed — no SetClosed() needed in KiCad 10
+        self.board.Add(poly)
+
+        keepout_result = None
+        if add_keepout:
+            # Create a RULE_AREA (keepout zone) covering all copper layers
+            try:
+                zone = pcbnew.ZONE(self.board)
+                zone.SetIsRuleArea(True)
+                zone.SetDoNotAllowZoneFills(True)   # KiCad 10: was SetDoNotAllowCopperPour
+                zone.SetDoNotAllowTracks(True)
+                zone.SetDoNotAllowVias(True)
+                zone.SetDoNotAllowPads(False)
+                zone.SetDoNotAllowFootprints(False)
+                # Apply to all copper layers (F.Cu through B.Cu)
+                zone.SetLayerSet(pcbnew.LSET.AllCuMask())
+                outline = zone.Outline()
+                outline.NewOutline()
+                for p in pts_nm:
+                    outline.Append(p.x, p.y)
+                zone.SetMinIslandArea(0)
+                self.board.Add(zone)
+                keepout_result = {"added": True, "layers": "all_copper", "clearance_mm": keepout_clr}
+            except Exception as e:
+                keepout_result = {"added": False, "error": str(e)}
+
+        self.board.SetModified()
+        pcbnew.Refresh()
+        return {
+            "success": True,
+            "message": f"Added cutout polygon ({len(raw_pts)} points) to Edge.Cuts"
+                       + (f" + keepout on all copper layers" if add_keepout and keepout_result and keepout_result.get("added") else ""),
+            "points": len(raw_pts),
+            "keepout": keepout_result,
+        }
+
+    def delete_pcb_shape(self, params: dict) -> dict:
+        """Delete the PCB drawing (line, arc, polygon, rect) nearest to a given point.
+
+        Params:
+            x, y      – search point in mm (required)
+            layer     – layer name filter, e.g. "Edge.Cuts" (default: any layer)
+            shape_type – optional filter: "polygon","line","arc","rect","any" (default: "any")
+            tolerance – max search radius in mm (default: 5.0)
+        """
+        if not self.board:
+            return {"success": False, "message": "No board loaded"}
+
+        x_mm = params.get("x"); y_mm = params.get("y")
+        if x_mm is None or y_mm is None:
+            return {"success": False, "message": "x and y are required"}
+
+        layer_name = params.get("layer", None)
+        shape_filter = params.get("shape_type", "any").lower()
+        tolerance = float(params.get("tolerance", 5.0))
+
+        target_x = pcbnew.FromMM(float(x_mm))
+        target_y = pcbnew.FromMM(float(y_mm))
+        tol_nm = pcbnew.FromMM(tolerance)
+
+        # Map layer name to ID
+        layer_id = None
+        if layer_name:
+            layer_id = self.board.GetLayerID(layer_name)
+            if layer_id < 0:
+                return {"success": False, "message": f"Unknown layer: {layer_name}"}
+
+        # Map shape_filter to SHAPE_T_* values
+        SHAPE_MAP = {
+            "segment": 0, "line": 0,
+            "rect": 1,
+            "arc": 2,
+            "circle": 3,
+            "polygon": 4, "poly": 4,
+            "bezier": 5,
+        }
+        wanted_shape = SHAPE_MAP.get(shape_filter, None) if shape_filter != "any" else None
+
+        best = None
+        best_dist = float("inf")
+
+        for drawing in self.board.GetDrawings():
+            if layer_id is not None and drawing.GetLayer() != layer_id:
+                continue
+            if wanted_shape is not None:
+                try:
+                    if drawing.GetShape() != wanted_shape:
+                        continue
+                except Exception:
+                    continue
+
+            # Use bounding-box centre as the shape's representative point
+            try:
+                bb = drawing.GetBoundingBox()
+                cx = bb.GetCenter().x
+                cy = bb.GetCenter().y
+            except Exception:
+                cx = drawing.GetX()
+                cy = drawing.GetY()
+
+            dx = cx - target_x; dy = cy - target_y
+            dist = math.sqrt(dx * dx + dy * dy)
+            if dist < best_dist:
+                best_dist = dist
+                best = drawing
+
+        # Also search ZONE / RULE_AREA objects
+        for zone in self.board.Zones():
+            try:
+                bb = zone.GetBoundingBox()
+                zcx = bb.GetCenter().x; zcy = bb.GetCenter().y
+            except Exception:
+                continue
+            dx = zcx - target_x; dy = zcy - target_y
+            dist = math.sqrt(dx * dx + dy * dy)
+            if dist < best_dist:
+                # Apply layer filter if requested (zones can span multiple layers)
+                if layer_id is not None:
+                    ls = zone.GetLayerSet()
+                    if not ls.test(layer_id):
+                        continue
+                best_dist = dist
+                best = zone
+
+        if best is None or best_dist > tol_nm:
+            return {
+                "success": False,
+                "message": f"No PCB shape or zone found within {tolerance} mm of ({x_mm}, {y_mm})"
+                           + (f" on layer {layer_name}" if layer_name else ""),
+            }
+
+        # Collect info before deletion
+        is_zone = isinstance(best, pcbnew.ZONE)
+        if is_zone:
+            try: bb = best.GetBoundingBox(); cx = pcbnew.ToMM(bb.GetCenter().x); cy = pcbnew.ToMM(bb.GetCenter().y)
+            except Exception: cx, cy = 0, 0
+            layer_str = "ZONE/RULE_AREA"
+            shape_type_num = "zone"
+        else:
+            try: shape_type_num = best.GetShape()
+            except Exception: shape_type_num = -1
+            try: bb = best.GetBoundingBox(); cx = pcbnew.ToMM(bb.GetCenter().x); cy = pcbnew.ToMM(bb.GetCenter().y)
+            except Exception: cx, cy = pcbnew.ToMM(best.GetX()), pcbnew.ToMM(best.GetY())
+            layer_str = self.board.GetLayerName(best.GetLayer())
+
+        self.board.Remove(best)
+        self.board.SetModified()
+        pcbnew.Refresh()
+
+        return {
+            "success": True,
+            "message": f"Deleted {layer_str} (type={shape_type_num}) near ({cx:.2f}, {cy:.2f}) mm",
+            "deleted": {"layer": layer_str, "shape_type": str(shape_type_num),
+                        "center_mm": {"x": cx, "y": cy}, "dist_mm": round(pcbnew.ToMM(best_dist), 3)},
+        }
+
     def _add_corner_arc(
         self,
         center: pcbnew.VECTOR2I,

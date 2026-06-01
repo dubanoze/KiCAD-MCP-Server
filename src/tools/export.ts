@@ -323,5 +323,40 @@ export function registerExportTools(server: McpServer, callKicadScript: CommandF
     },
   );
 
+  // ------------------------------------------------------
+  // Import PCB Tool (Altium, Eagle, PADS, etc.)
+  // ------------------------------------------------------
+  server.tool(
+    "import_pcb",
+    "Import a non-KiCad PCB file (Altium .PcbDoc, Eagle .brd, PADS, CadStar, P-CAD, Fabmaster, SolidWorks) and convert it to a KiCad .kicad_pcb using kicad-cli. Useful for studying reference designs (e.g. antenna layouts) by reading exact coordinates after conversion.",
+    {
+      input_file: z.string().describe("Path to the source PCB file (e.g. BLE.PcbDoc)"),
+      output_file: z
+        .string()
+        .optional()
+        .describe("Output .kicad_pcb path (default: <input>_imported.kicad_pcb)"),
+      format: z
+        .string()
+        .optional()
+        .describe("Format hint: auto (default), altium, eagle, pads, cadstar, fabmaster, pcad, solidworks"),
+    },
+    async (args: { input_file: string; output_file?: string; format?: string }) => {
+      const result = await callKicadScript("import_pcb", args);
+      if (result.success) {
+        return {
+          content: [
+            { type: "text", text: `${result.message}\n${result.report || ""}` },
+          ],
+        };
+      } else {
+        return {
+          content: [
+            { type: "text", text: `import_pcb failed: ${result.message}\n${result.report || ""}` },
+          ],
+        };
+      }
+    },
+  );
+
   logger.info("Export tools registered");
 }

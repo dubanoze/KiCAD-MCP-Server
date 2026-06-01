@@ -13,6 +13,7 @@ from .outline import BoardOutlineCommands
 # Import specialized modules
 from .size import BoardSizeCommands
 from .view import BoardViewCommands
+from .visibility import BoardVisibilityCommands
 
 logger = logging.getLogger("kicad_interface")
 
@@ -29,6 +30,7 @@ class BoardCommands:
         self.layer_commands = BoardLayerCommands(board)
         self.outline_commands = BoardOutlineCommands(board)
         self.view_commands = BoardViewCommands(board)
+        self.visibility_commands = BoardVisibilityCommands(board)
 
     # Delegate board size commands
     def set_board_size(self, params: Dict[str, Any]) -> Dict[str, Any]:
@@ -68,6 +70,16 @@ class BoardCommands:
         self.outline_commands.board = self.board
         return self.outline_commands.add_text(params)
 
+    def add_board_cutout(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """Add an arbitrary polygon cutout to Edge.Cuts with optional copper keepout on all layers"""
+        self.outline_commands.board = self.board
+        return self.outline_commands.add_board_cutout(params)
+
+    def delete_pcb_shape(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """Delete the PCB drawing nearest to a given point (line/arc/polygon on any layer)"""
+        self.outline_commands.board = self.board
+        return self.outline_commands.delete_pcb_shape(params)
+
     # Delegate view commands
     def get_board_info(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """Get information about the current board"""
@@ -83,3 +95,14 @@ class BoardCommands:
         """Get the bounding box extents of the board"""
         self.view_commands.board = self.board
         return self.view_commands.get_board_extents(params)
+
+    # Delegate visibility commands
+    def set_layer_visibility(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """Show or hide named layers by writing a preset into .kicad_pro"""
+        self.visibility_commands.board = self.board
+        return self.visibility_commands.set_layer_visibility(params)
+
+    def center_board_on_sheet(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """Move all board content so Edge.Cuts bbox is centred on the paper sheet"""
+        self.visibility_commands.board = self.board
+        return self.visibility_commands.center_board_on_sheet(params)

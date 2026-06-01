@@ -489,4 +489,107 @@ export function registerBoardTools(server: McpServer, callKicadScript: CommandFu
       }
     },
   );
+
+  // ------------------------------------------------------
+  // Set Layer Visibility Tool
+  // ------------------------------------------------------
+  server.tool(
+    "set_layer_visibility",
+    "Show or hide named PCB layers by writing a named preset into the .kicad_pro file. Reload the board in KiCad GUI to apply. Example: hide F.Courtyard and B.Courtyard to remove purple outlines.",
+    {
+      layers: z
+        .array(z.string())
+        .describe('Layer names to change, e.g. ["F.Courtyard", "B.Courtyard"]'),
+      visible: z
+        .boolean()
+        .optional()
+        .describe("true = show, false = hide (default: false)"),
+      preset_name: z
+        .string()
+        .optional()
+        .describe('Name for the layer preset entry (default: "custom")'),
+    },
+    async (args: { layers: string[]; visible?: boolean; preset_name?: string }) => {
+      const result = await callKicadScript("set_layer_visibility", args);
+      if (result.success) {
+        return { content: [{ type: "text", text: result.message }] };
+      } else {
+        return { content: [{ type: "text", text: `set_layer_visibility failed: ${result.message}` }] };
+      }
+    },
+  );
+
+  // ------------------------------------------------------
+  // Center Board on Sheet Tool
+  // ------------------------------------------------------
+  server.tool(
+    "center_board_on_sheet",
+    "Move all board content (footprints, tracks, zones, drawings) so the Edge.Cuts bounding box is centred on the current paper sheet. Fixes boards that appear off-sheet in the KiCad editor.",
+    {
+      sheet_width_mm: z
+        .number()
+        .optional()
+        .describe("Override sheet width in mm (default: auto-detected from board paper settings)"),
+      sheet_height_mm: z
+        .number()
+        .optional()
+        .describe("Override sheet height in mm (default: auto-detected from board paper settings)"),
+    },
+    async (args: { sheet_width_mm?: number; sheet_height_mm?: number }) => {
+      const result = await callKicadScript("center_board_on_sheet", args);
+      if (result.success) {
+        return { content: [{ type: "text", text: result.message }] };
+      } else {
+        return { content: [{ type: "text", text: `center_board_on_sheet failed: ${result.message}` }] };
+      }
+    },
+  );
+
+  // ------------------------------------------------------
+  // Add Board Cutout Tool
+  // ------------------------------------------------------
+  server.tool(
+    "add_board_cutout",
+    "Add an arbitrary polygon cutout to Edge.Cuts (e.g. a triangular/trapezoidal slot at the board edge for an integrated PCB antenna). Optionally creates a copper keepout zone on all layers over the same polygon to prevent copper pour and traces from entering the cutout area.",
+    {
+      points: z
+        .array(z.object({ x: z.number(), y: z.number() }))
+        .min(3)
+        .describe("Polygon vertices in order (mm), e.g. [{x:160,y:88},{x:154,y:88},{x:156.5,y:92},{x:159.5,y:92}]"),
+      unit: z.string().optional().describe("Unit: 'mm' (default)"),
+      keepout: z.boolean().optional().describe("Also add copper keepout on all layers (default: true)"),
+      keepout_clearance: z.number().optional().describe("Extra clearance around keepout in mm (default 0.2)"),
+    },
+    async (args: { points: {x: number, y: number}[]; unit?: string; keepout?: boolean; keepout_clearance?: number }) => {
+      const result = await callKicadScript("add_board_cutout", args);
+      if (result.success) {
+        return { content: [{ type: "text", text: result.message }] };
+      } else {
+        return { content: [{ type: "text", text: `add_board_cutout failed: ${result.message}` }] };
+      }
+    },
+  );
+
+  // ------------------------------------------------------
+  // Delete PCB Shape Tool
+  // ------------------------------------------------------
+  server.tool(
+    "delete_pcb_shape",
+    "Delete the PCB drawing (line, arc, polygon, rect) nearest to a given point. Use to remove unwanted Edge.Cuts cutouts, silkscreen graphics, or other board drawings without opening KiCad GUI.",
+    {
+      x: z.number().describe("Search point X in mm"),
+      y: z.number().describe("Search point Y in mm"),
+      layer: z.string().optional().describe("Layer name filter, e.g. 'Edge.Cuts' (default: any layer)"),
+      shape_type: z.string().optional().describe("Shape filter: 'polygon', 'line', 'arc', 'rect', 'any' (default: 'any')"),
+      tolerance: z.number().optional().describe("Max search radius in mm (default: 5.0)"),
+    },
+    async (args: { x: number; y: number; layer?: string; shape_type?: string; tolerance?: number }) => {
+      const result = await callKicadScript("delete_pcb_shape", args);
+      if (result.success) {
+        return { content: [{ type: "text", text: result.message }] };
+      } else {
+        return { content: [{ type: "text", text: `delete_pcb_shape failed: ${result.message}` }] };
+      }
+    },
+  );
 }
