@@ -643,5 +643,37 @@ export function registerComponentTools(server: McpServer, callKicadScript: Comma
     },
   );
 
+  // ------------------------------------------------------
+  // Set Footprint 3D Model Tool
+  // ------------------------------------------------------
+  server.tool(
+    "set_footprint_3d_model",
+    "Assign or replace the 3D model of a placed footprint on the board. Use when a footprint's bundled 3D model is missing/wrong (e.g. a right-angle USB-C whose referenced .step is absent). model_path may use KiCad env vars like ${KICAD10_3DMODEL_DIR}.",
+    {
+      reference: z.string().describe("Component reference (e.g. 'J1')"),
+      model_path: z
+        .string()
+        .describe('Path to the 3D model (.step/.wrl), may use ${KICAD10_3DMODEL_DIR}'),
+      replace: z.boolean().optional().describe("Clear existing models first (default true)"),
+      show: z.boolean().optional().describe("Whether the model is visible (default true)"),
+      offset: z.object({ x: z.number(), y: z.number(), z: z.number() }).partial().optional(),
+      rotation: z.object({ x: z.number(), y: z.number(), z: z.number() }).partial().optional(),
+      scale: z.object({ x: z.number(), y: z.number(), z: z.number() }).partial().optional(),
+    },
+    async (args: any) => {
+      const result = await callKicadScript("set_footprint_3d_model", args);
+      return {
+        content: [
+          {
+            type: "text",
+            text: result.success
+              ? `${result.message} (models now: ${result.model_count})`
+              : `set_footprint_3d_model failed: ${result.message || result.errorDetails}`,
+          },
+        ],
+      };
+    },
+  );
+
   logger.info("Component management tools registered");
 }

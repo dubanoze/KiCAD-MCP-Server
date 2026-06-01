@@ -239,6 +239,56 @@ class ComponentCommands:
             logger.error(f"Error moving component: {str(e)}")
             return {"success": False, "message": "Failed to move component", "errorDetails": str(e)}
 
+    def set_footprint_3d_model(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """Assign or replace the 3D model of a placed footprint on the board.
+
+        Params:
+            reference  – component reference (e.g. 'J1')   [required]
+            model_path – path to the 3D model (.step/.wrl). May use KiCad env
+                         vars, e.g. "${KICAD10_3DMODEL_DIR}/Connector_USB.3dshapes/x.step"  [required]
+            replace    – clear existing models first (default true)
+            show       – whether the model is visible (default true)
+            offset/rotation – {x,y,z} in mm / degrees (optional)
+            scale      – {x,y,z} (optional, default 1,1,1)
+        """
+        try:
+            if not self.board:
+                return {"success": False, "message": "No board is loaded"}
+            reference = params.get("reference")
+            model_path = params.get("model_path")
+            if not reference or not model_path:
+                return {"success": False, "message": "reference and model_path are required"}
+
+            module = self.board.FindFootprintByReference(reference)
+            if not module:
+                return {"success": False, "message": f"Component not found: {reference}"}
+
+            if params.get("replace", True):
+                module.Models().clear()
+
+            model = pcbnew.FP_3DMODEL()
+            model.m_Filename = model_path
+            model.m_Show = bool(params.get("show", True))
+            off = params.get("offset") or {}
+            rot = params.get("rotation") or {}
+            scl = params.get("scale") or {}
+            model.m_Offset = pcbnew.VECTOR3D(
+                float(off.get("x", 0.0)), float(off.get("y", 0.0)), float(off.get("z", 0.0)))
+            model.m_Rotation = pcbnew.VECTOR3D(
+                float(rot.get("x", 0.0)), float(rot.get("y", 0.0)), float(rot.get("z", 0.0)))
+            model.m_Scale = pcbnew.VECTOR3D(
+                float(scl.get("x", 1.0)), float(scl.get("y", 1.0)), float(scl.get("z", 1.0)))
+            module.Models().push_back(model)
+
+            return {
+                "success": True,
+                "message": f"Set 3D model for {reference}: {model_path}",
+                "model_count": module.Models().size(),
+            }
+        except Exception as e:
+            logger.error(f"Error setting 3D model: {str(e)}")
+            return {"success": False, "message": "Failed to set 3D model", "errorDetails": str(e)}
+
     def rotate_component(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """Rotate an existing component"""
         try:

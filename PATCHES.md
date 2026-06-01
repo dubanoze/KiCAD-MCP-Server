@@ -181,3 +181,11 @@ C:\Users\Denis Fedorov\AppData\Local\Programs\KiCad\10.0\bin\python.exe -m pip i
 5. /mcp → kicad → Reconnect                — pick up new tools
 ```
 Round-trip time: ~5 min.  No Python compilation needed (Python files are read at runtime).
+
+## . set_footprint_3d_model
+
+**Added:** 2026-06-02 · component.py / kicad_interface.py / src/tools/component.ts
+
+Assign/replace a placed footprint's 3D model (FP_3DMODEL). Use when a footprint's bundled
+model .step is missing in the install (e.g. USB_C_Receptacle_HRO right-angle) — point it at an
+available model such as GCT_USB4105 ...Horizontal.step. Board-mutating (auto-save).
