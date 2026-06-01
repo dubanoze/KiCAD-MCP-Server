@@ -577,6 +577,21 @@ class DynamicSymbolLoader:
         fp_x,  fp_y,  _,     _       = _prop_at("Footprint",  0,     0,    0)
         ds_x,  ds_y,  _,     _       = _prop_at("Datasheet",  0,     0,    0)
 
+        # Determine the schematic's own root UUID for the symbol instance path.
+        # KiCad expects the instance path to be "/<root-sheet-uuid>" (a valid KIID_PATH).
+        # Writing a bare "/" produces a malformed KIID_PATH that SEGFAULTS KiCad's
+        # serializer in KIID::operator< when it saves/upgrades the schematic.
+        root_uuid = ""
+        try:
+            with open(schematic_path, "r", encoding="utf-8") as _f:
+                _head = _f.read(2000)
+            _m = re.search(r'\(kicad_sch\b.*?\(uuid\s+"?([0-9a-fA-F-]{36})"?', _head, re.DOTALL)
+            if _m:
+                root_uuid = _m.group(1)
+        except Exception:
+            root_uuid = ""
+        instance_path = f"/{root_uuid}" if root_uuid else "/"
+
         mirror_str = " (mirror y)" if mirror_y else ""
         instance_block = f"""  (symbol (lib_id "{full_lib_id}") (at {x} {y} {angle}){mirror_str} (unit {unit})
     (in_bom yes) (on_board yes) (dnp no)
@@ -595,7 +610,7 @@ class DynamicSymbolLoader:
     )
     (instances
       (project "project"
-        (path "/"
+        (path "{instance_path}"
           (reference "{reference}")
           (unit {unit})
         )
