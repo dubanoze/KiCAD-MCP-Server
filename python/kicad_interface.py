@@ -514,6 +514,7 @@ class KiCADInterface:
             "delete_zones": self._handle_delete_zones,
             "set_layer_name": self._handle_set_layer_name,
             "update_footprints_from_library": self._handle_update_footprints_from_library,
+            "set_grid": self._handle_set_grid_no_gui,
             # Design rule commands
             "set_design_rules": self.design_rule_commands.set_design_rules,
             "get_design_rules": self.design_rule_commands.get_design_rules,
@@ -642,6 +643,7 @@ class KiCADInterface:
         "add_copper_pour": "_ipc_add_copper_pour",
         "refill_zones": "_ipc_refill_zones",
         "delete_zones": "_ipc_delete_zones",
+        "set_grid": "_ipc_set_grid",
         # Board commands
         "add_text": "_ipc_add_text",
         "add_board_text": "_ipc_add_text",
@@ -6045,6 +6047,54 @@ print("ok")
         except Exception as e:
             logger.error(f"IPC add_copper_pour error: {e}")
             return {"success": False, "message": str(e)}
+
+    def _ipc_set_grid(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """IPC handler for set_grid - changes the live editor grid via run_action.
+
+        action: 'finer' | 'coarser' | 'fast1' | 'fast2' | 'cycle'. For finer/coarser,
+        `steps` (default 1) repeats the action to move several grids at once.
+        """
+        try:
+            action = params.get("action", "finer")
+            steps = params.get("steps", 1)
+            try:
+                steps = max(1, min(int(steps), 12))
+            except (TypeError, ValueError):
+                steps = 1
+
+            repeat = steps if action in ("finer", "coarser") else 1
+            detail = None
+            for _ in range(repeat):
+                detail = self.ipc_board_api.set_grid(action)
+                if not (detail and detail.get("ok")):
+                    break
+
+            ok = bool(detail and detail.get("ok"))
+            return {
+                "success": ok,
+                "message": (
+                    f"Grid action '{action}'" + (f" x{repeat}" if repeat > 1 else "")
+                    + (" applied (visible in KiCAD UI)" if ok else " failed")
+                ),
+                "detail": detail,
+                **self._backend_status(),
+            }
+        except Exception as e:
+            logger.error(f"IPC set_grid error: {e}")
+            return {"success": False, "message": str(e)}
+
+    def _handle_set_grid_no_gui(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """SWIG fallback for set_grid: the grid is a live-editor setting with no
+        file/SWIG representation, so it can only be changed while KiCad is open
+        over IPC."""
+        return {
+            "success": False,
+            "message": (
+                "set_grid changes the live KiCad editor grid and requires KiCad open "
+                "over IPC. Open pcbnew and reconnect, then retry."
+            ),
+            **self._backend_status(),
+        }
 
     def _ipc_delete_zones(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """IPC handler for delete_zones - removes matching zones with real-time UI update"""

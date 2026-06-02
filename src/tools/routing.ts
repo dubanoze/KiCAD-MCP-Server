@@ -565,6 +565,34 @@ export function registerRoutingTools(server: McpServer, callKicadScript: Functio
     },
   );
 
+  // Set grid tool
+  server.tool(
+    "set_grid",
+    "Change the active grid in the live KiCad PCB editor (IPC; requires pcbnew open). KiCad's API cannot set an exact grid size, so step through the editor's grid list with 'finer'/'coarser' (use steps to move several at once), or select one of the two user-configured 'fast' grids (fast1/fast2) or toggle between them (cycle). Use 'finer' when the grid steps too far.",
+    {
+      action: z
+        .enum(["finer", "coarser", "fast1", "fast2", "cycle"])
+        .describe(
+          "finer = next (smaller) grid; coarser = previous (larger) grid; fast1/fast2 = the two user fast grids; cycle = toggle between the fast grids.",
+        ),
+      steps: z
+        .number()
+        .optional()
+        .describe("Number of steps for 'finer'/'coarser' (default 1, capped at 12)."),
+    },
+    async (args: any) => {
+      const result = await callKicadScript("set_grid", args);
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify(result, null, 2),
+          },
+        ],
+      };
+    },
+  );
+
   // Route pad to pad tool
   server.tool(
     "route_pad_to_pad",

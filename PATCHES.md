@@ -321,3 +321,19 @@ whenever the GUI was open.
 
 Result: SWIG and IPC tools operate on the same open board with no manual mode switching — the
 "run with the GUI closed" caveat on patches 10-13 no longer applies.
+
+---
+
+## 15. `set_grid` — change the live editor grid
+
+**Added:** 2026-06-02 · `python/kicad_api/ipc_backend.py` (`IPCBoardAPI.set_grid`) ·
+`python/kicad_interface.py` (`_ipc_set_grid`, `_handle_set_grid_no_gui`, route + IPC_CAPABLE) ·
+`src/tools/routing.ts`
+
+Steps the active PCB-editor grid via KiCad `run_action`: `finer`/`coarser`
+(`gridNext`/`gridPrev`, with a `steps` repeat), the two user fast grids (`fast1`/`fast2`), or
+`cycle` (`gridFastCycle`). The IPC API exposes no read or absolute-set for the grid size (kipy
+`KiCad.grid`/`Board.grid` are empty and there are no grid commands), and the active grid lives in
+the editor frame, not the board/project file — so stepping through the configured grid list is
+the only available control. IPC-only: the SWIG route returns a "needs KiCad open over IPC"
+message. Not board-mutating, so the dual-mode bridge does not engage.

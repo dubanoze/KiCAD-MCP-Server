@@ -1212,6 +1212,36 @@ class IPCBoardAPI(BoardAPI):
             logger.warning(f"get_board_filename failed: {e}")
             return None
 
+    # Friendly grid action -> KiCad run_action identifier. The IPC API exposes no
+    # way to set an exact grid size, so the editor's grid list is stepped through
+    # (gridNext/gridPrev) or the two user-configurable "fast" grids are selected.
+    _GRID_ACTIONS = {
+        "finer": "common.Control.gridNext",
+        "coarser": "common.Control.gridPrev",
+        "fast1": "common.Control.gridFast1",
+        "fast2": "common.Control.gridFast2",
+        "cycle": "common.Control.gridFastCycle",
+    }
+
+    def set_grid(self, action: str) -> Dict[str, Any]:
+        """Change the active editor grid by firing a KiCad GUI action.
+
+        Returns {"ok": bool, "status": int|None, "action_id": str|None}. KiCad's
+        RunActionStatus uses 1 == RAS_OK; anything else means the action was not
+        accepted (e.g. no editor frame open).
+        """
+        action_id = self._GRID_ACTIONS.get(action)
+        if action_id is None:
+            return {"ok": False, "error": f"unknown grid action '{action}'", "action_id": None}
+        try:
+            response = self._kicad.run_action(action_id)
+            status = getattr(response, "status", None)
+            status = int(status) if status is not None else None
+            return {"ok": status == 1, "status": status, "action_id": action_id}
+        except Exception as e:
+            logger.error(f"set_grid({action}) failed: {e}")
+            return {"ok": False, "error": str(e), "action_id": action_id}
+
     def get_tracks(self) -> List[Dict[str, Any]]:
         """Get all tracks on the board."""
         try:
