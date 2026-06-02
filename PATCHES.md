@@ -430,3 +430,19 @@ solidly around them (the slot side stays open by design) — the clean, portable
 footprint/pad level rather than with board-level patch zones or a zone-wide clearance change. The
 matching library footprint pads are set the same way so the property travels with the component.
 SWIG self-saving; applies live via the dual-mode bridge.
+
+---
+
+## 21. `delete_zones` — `maxAreaMm2` filter (target small local/patch zones)
+
+**Added:** 2026-06-02 · `python/kicad_interface.py` (`_handle_delete_zones`) ·
+`src/tools/routing.ts`
+
+Adds an optional `maxAreaMm2` filter to `delete_zones`: only zones whose outline area is at most
+the given value are removed (`abs(zone.Outline().Area()) / 1e12`). Combined with `net`/`layer` it
+targets small local "patch" pours — e.g. the antenna-corner GND zones added as a fill crutch —
+without touching the full-board GND/PWR planes that share the same net and layer.
+
+**Why:** `delete_zones` filtered only by net+layer, so it could not remove a small local GND zone
+without also deleting the main GND plane on that layer. Area-bounding makes the cleanup surgical.
+SWIG path (the IPC handler ignores `maxAreaMm2` for now — kipy exposes no zone-area accessor).

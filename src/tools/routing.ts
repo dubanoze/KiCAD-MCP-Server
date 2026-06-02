@@ -497,6 +497,10 @@ export function registerRoutingTools(server: McpServer, callKicadScript: Functio
         .boolean()
         .optional()
         .describe("When true (default), never delete rule-area / keepout zones."),
+      maxAreaMm2: z
+        .number()
+        .optional()
+        .describe("Only delete zones whose outline area is at most this many mm² — targets small local/patch zones without touching full-board planes."),
     },
     async (args: any) => {
       const result = await callKicadScript("delete_zones", args);

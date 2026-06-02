@@ -5995,6 +5995,7 @@ class KiCADInterface:
             layer = params.get("layer")
             net = params.get("net")
             copper_only = params.get("copperOnly", True)
+            max_area = params.get("maxAreaMm2")
             layer_id = self.board.GetLayerID(layer) if layer else None
             if layer is not None and layer_id is not None and layer_id < 0:
                 return {"success": False, "message": f"Unknown layer: {layer}"}
@@ -6007,6 +6008,15 @@ class KiCADInterface:
                     continue
                 if layer_id is not None and not zone.GetLayerSet().Contains(layer_id):
                     continue
+                if max_area is not None:
+                    # outline area in mm^2 (IU are nm -> /1e12); skip larger zones.
+                    # Targets small local/patch zones without touching full planes.
+                    try:
+                        area_mm2 = abs(zone.Outline().Area()) / 1e12
+                    except Exception:
+                        area_mm2 = None
+                    if area_mm2 is None or area_mm2 > float(max_area):
+                        continue
                 victims.append(zone)
 
             for zone in victims:
