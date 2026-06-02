@@ -392,3 +392,41 @@ file backend instead of routing to a dead socket.
 session and failed (`KiCad is busy` / no board), forcing a manual `/mcp` reconnect. Checking
 `KiCadProcessManager.is_running()` and demoting on the spot makes the backend self-heal — the
 session transparently continues on SWIG once the GUI is gone.
+
+---
+
+## 19. `add_zone` — copper pour with pad-connection control
+
+**Added:** 2026-06-02 · `python/kicad_api/ipc_backend.py` (`IPCBoardAPI.add_zone` `pad_connection`) ·
+`python/kicad_interface.py` (`_ipc_add_zone`, `_handle_add_zone`, route + IPC_CAPABLE +
+`_SWIG_SELF_SAVING_COMMANDS`) · `src/tools/routing.ts` (TS tool already existed; backend was missing)
+
+The TS `add_zone` tool existed but the Python backend returned *"Unknown command"*. Implemented it
+on both backends. Unlike `add_copper_pour` it exposes **`padConnection`** (solid / thermal / none).
+On IPC the pad-connection style is written via the proto
+(`zone._proto.copper_settings.connection.zone_connection = ZCS_FULL`, the kipy wrapper has no
+setter); on SWIG via `ZONE.SetPadConnection`.
+
+**Why:** `solid` floods copper right up to a net's pads — required to fully bury stitching
+vias/pads, which the default thermal relief leaves spoke-gapped. `add_copper_pour` could not do
+this. (Superseded for the antenna by patch #20, which fixes the fill at the pad/footprint level
+instead of with an extra zone, but `add_zone` remains the general way to drop a pour with a
+specific pad-connection.)
+
+---
+
+## 20. `set_pad_zone_connection` — set a placed footprint's pad-to-zone connection
+
+**Added:** 2026-06-02 · `python/kicad_interface.py`
+(`_handle_set_pad_zone_connection` + route + `_SWIG_SELF_SAVING_COMMANDS`) · `src/tools/routing.ts`
+
+Sets the zone-connection mode (`solid`/`thermal`/`none`/`inherit`) on a placed footprint's pads
+via `PAD.SetLocalZoneConnection`. `reference` + `connection`; optional `pads` (limit to pad
+numbers) and `net` (limit to a net, e.g. `GND`).
+
+**Why:** the niche antenna's GND via-fence looked unfilled because the default thermal relief
+leaves gaps around each pad. Setting the GND pads to `solid` makes the existing GND pour flood
+solidly around them (the slot side stays open by design) — the clean, portable fix, done at the
+footprint/pad level rather than with board-level patch zones or a zone-wide clearance change. The
+matching library footprint pads are set the same way so the property travels with the component.
+SWIG self-saving; applies live via the dual-mode bridge.

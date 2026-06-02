@@ -509,6 +509,7 @@ class KiCADInterface:
             "get_nets_list": self.routing_commands.get_nets_list,
             "create_netclass": self.routing_commands.create_netclass,
             "add_copper_pour": self.routing_commands.add_copper_pour,
+            "add_zone": self._handle_add_zone,
             "route_differential_pair": self.routing_commands.route_differential_pair,
             "refill_zones": self._handle_refill_zones,
             "delete_zones": self._handle_delete_zones,
@@ -516,6 +517,7 @@ class KiCADInterface:
             "update_footprints_from_library": self._handle_update_footprints_from_library,
             "assign_footprint_graphic_net": self._handle_assign_footprint_graphic_net,
             "convert_footprint_graphics_to_tracks": self._handle_convert_footprint_graphics_to_tracks,
+            "set_pad_zone_connection": self._handle_set_pad_zone_connection,
             "set_grid": self._handle_set_grid_no_gui,
             # Design rule commands
             "set_design_rules": self.design_rule_commands.set_design_rules,
@@ -643,6 +645,7 @@ class KiCADInterface:
         "get_nets_list": "_ipc_get_nets_list",
         # Zone commands
         "add_copper_pour": "_ipc_add_copper_pour",
+        "add_zone": "_ipc_add_zone",
         "refill_zones": "_ipc_refill_zones",
         "delete_zones": "_ipc_delete_zones",
         "set_grid": "_ipc_set_grid",
@@ -1024,6 +1027,8 @@ class KiCADInterface:
         "update_footprints_from_library",
         "assign_footprint_graphic_net",
         "convert_footprint_graphics_to_tracks",
+        "add_zone",
+        "set_pad_zone_connection",
     }
 
     @staticmethod
@@ -5744,6 +5749,77 @@ class KiCADInterface:
             logger.error(f"convert_footprint_graphics_to_tracks error: {e}")
             return {"success": False, "message": str(e)}
 
+    def _handle_set_pad_zone_connection(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """Set the zone-connection (pad-to-copper-pour) mode on a placed footprint's pads.
+
+        ``solid`` floods the pour right up to the pad — required to fully bury
+        stitching vias/pads (thermal relief leaves spoke gaps); ``thermal`` =
+        relief spokes; ``none`` = isolated; ``inherit`` = use the zone's setting.
+        ``reference`` selects the footprint; optional ``pads`` (list/str) limits
+        to those pad numbers, ``net`` limits to pads on that net (e.g. 'GND').
+        """
+        try:
+            import pcbnew
+
+            if not self.board:
+                return {"success": False, "message": "No board loaded"}
+
+            ref = params.get("reference")
+            conn_name = str(params.get("connection") or "").lower()
+            if not ref or not conn_name:
+                return {"success": False, "message": "reference and connection are required"}
+
+            conn_map = {
+                "solid": pcbnew.ZONE_CONNECTION_FULL,
+                "full": pcbnew.ZONE_CONNECTION_FULL,
+                "thermal": pcbnew.ZONE_CONNECTION_THERMAL,
+                "none": pcbnew.ZONE_CONNECTION_NONE,
+                "inherit": pcbnew.ZONE_CONNECTION_INHERITED,
+            }
+            conn = conn_map.get(conn_name)
+            if conn is None:
+                return {"success": False, "message": f"Unknown connection '{conn_name}' (solid/thermal/none/inherit)"}
+
+            fp = self.board.FindFootprintByReference(ref)
+            if not fp:
+                return {"success": False, "message": f"Footprint '{ref}' not found"}
+
+            pads_filter = params.get("pads")
+            if isinstance(pads_filter, (str, int)):
+                pads_filter = [str(pads_filter)]
+            elif pads_filter:
+                pads_filter = [str(x) for x in pads_filter]
+            net_filter = params.get("net")
+
+            applied = 0
+            for p in fp.Pads():
+                if pads_filter and p.GetNumber() not in pads_filter:
+                    continue
+                if net_filter and p.GetNetname() != net_filter:
+                    continue
+                p.SetLocalZoneConnection(conn)
+                applied += 1
+
+            saved = False
+            if applied:
+                self.board.SetModified()
+                try:
+                    self.board.Save(self.board.GetFileName())
+                    saved = True
+                except Exception as e:
+                    return {"success": False, "message": f"save failed: {e}", "applied": applied}
+
+            return {
+                "success": True,
+                "message": f"{ref}: set zone connection '{conn_name}' on {applied} pad(s)",
+                "applied": applied,
+                "saved": saved,
+                **self._backend_status(),
+            }
+        except Exception as e:
+            logger.error(f"set_pad_zone_connection error: {e}")
+            return {"success": False, "message": str(e)}
+
     def _handle_update_footprints_from_library(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """Re-load footprints from their library (SWIG), like Tools->Update Footprints
         from Library. Preserves position/orientation/side/reference/value and re-maps
@@ -6244,6 +6320,126 @@ print("ok")
             }
         except Exception as e:
             logger.error(f"IPC add_copper_pour error: {e}")
+            return {"success": False, "message": str(e)}
+
+    def _ipc_add_zone(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """IPC handler for add_zone — copper pour with pad-connection control.
+
+        Like add_copper_pour but exposes ``padConnection`` (solid/thermal/none).
+        ``solid`` floods copper right up to the net's pads, which is required to
+        fully bury stitching vias/pads that thermal relief would leave gapped.
+        """
+        try:
+            layer = params.get("layer", "F.Cu")
+            net = params.get("net")
+            clearance = params.get("clearance", 0.5)
+            min_width = params.get("minWidth", params.get("min_width", 0.25))
+            points = params.get("points") or params.get("outline") or []
+            priority = params.get("priority", 0)
+            fill_type = params.get("fillType", "solid")
+            pad_connection = params.get("padConnection") or params.get("pad_connection")
+            name = params.get("name", "")
+
+            if not points or len(points) < 3:
+                return {"success": False, "message": "At least 3 points are required for a zone outline"}
+
+            formatted = [{"x": p.get("x", 0), "y": p.get("y", 0)} for p in points]
+            success = self.ipc_board_api.add_zone(
+                points=formatted,
+                layer=layer,
+                net_name=net,
+                clearance=clearance,
+                min_thickness=min_width,
+                priority=priority,
+                fill_mode=fill_type,
+                name=name,
+                pad_connection=pad_connection,
+            )
+            return {
+                "success": success,
+                "message": "Added zone (visible in KiCAD UI)" if success else "Failed to add zone",
+                "zone": {
+                    "layer": layer,
+                    "net": net,
+                    "clearance": clearance,
+                    "minWidth": min_width,
+                    "padConnection": pad_connection,
+                    "priority": priority,
+                    "pointCount": len(points),
+                },
+            }
+        except Exception as e:
+            logger.error(f"IPC add_zone error: {e}")
+            return {"success": False, "message": str(e)}
+
+    def _handle_add_zone(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """SWIG handler for add_zone — copper pour with pad-connection control.
+
+        Used when KiCad is not open over IPC. Creates a copper ZONE on one layer,
+        fills it, and self-saves. ``padConnection`` = solid/thermal/none.
+        """
+        try:
+            import pcbnew
+
+            if not self.board:
+                return {"success": False, "message": "No board loaded"}
+
+            layer = params.get("layer", "F.Cu")
+            net_name = params.get("net")
+            points = params.get("points") or params.get("outline") or []
+            clearance = float(params.get("clearance", 0.5))
+            min_width = float(params.get("minWidth", params.get("min_width", 0.25)))
+            pad_connection = (params.get("padConnection") or params.get("pad_connection") or "").lower()
+            priority = int(params.get("priority", 0))
+
+            if not points or len(points) < 3:
+                return {"success": False, "message": "At least 3 points are required for a zone outline"}
+
+            layer_id = self.board.GetLayerID(layer)
+            if layer_id is None or layer_id < 0:
+                return {"success": False, "message": f"Unknown layer: {layer}"}
+
+            z = pcbnew.ZONE(self.board)
+            z.SetLayer(layer_id)
+            z.SetIsRuleArea(False)
+            if net_name:
+                net = self.board.FindNet(net_name)
+                if net is None:
+                    return {"success": False, "message": f"Net '{net_name}' not found"}
+                z.SetNet(net)
+            z.SetLocalClearance(pcbnew.FromMM(clearance))
+            z.SetMinThickness(pcbnew.FromMM(min_width))
+            z.SetAssignedPriority(priority)
+            conn = {
+                "solid": pcbnew.ZONE_CONNECTION_FULL,
+                "full": pcbnew.ZONE_CONNECTION_FULL,
+                "thermal": pcbnew.ZONE_CONNECTION_THERMAL,
+                "none": pcbnew.ZONE_CONNECTION_NONE,
+            }.get(pad_connection)
+            if conn is not None:
+                z.SetPadConnection(conn)
+
+            pts = pcbnew.VECTOR_VECTOR2I()
+            for p in points:
+                pts.append(pcbnew.VECTOR2I(pcbnew.FromMM(float(p.get("x", 0))), pcbnew.FromMM(float(p.get("y", 0)))))
+            z.AddPolygon(pts)
+            self.board.Add(z)
+            pcbnew.ZONE_FILLER(self.board).Fill(self.board.Zones())
+
+            self.board.SetModified()
+            try:
+                self.board.Save(self.board.GetFileName())
+            except Exception as e:
+                return {"success": False, "message": f"save failed: {e}"}
+
+            return {
+                "success": True,
+                "message": f"Added {net_name or ''} zone on {layer} ({pad_connection or 'default'} pad connection), filled",
+                "saved": True,
+                **self._backend_status(),
+            }
+        except Exception as e:
+            logger.error(f"add_zone error: {e}")
             return {"success": False, "message": str(e)}
 
     def _ipc_set_grid(self, params: Dict[str, Any]) -> Dict[str, Any]:

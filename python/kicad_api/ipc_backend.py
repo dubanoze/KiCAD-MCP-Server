@@ -1336,6 +1336,7 @@ class IPCBoardAPI(BoardAPI):
         priority: int = 0,
         fill_mode: str = "solid",
         name: str = "",
+        pad_connection: Optional[str] = None,
     ) -> bool:
         """
         Add a copper pour zone to the board.
@@ -1351,6 +1352,10 @@ class IPCBoardAPI(BoardAPI):
             priority: Zone priority (higher = fills first)
             fill_mode: "solid" or "hatched"
             name: Optional zone name
+            pad_connection: how the pour connects to pads of its net —
+                "solid"/"full", "thermal", or "none". Omit to keep KiCad's
+                default. "solid" is required to fully flood copper around
+                stitching vias/pads (thermal relief leaves spoke gaps).
         """
         try:
             from kipy.board_types import Zone, ZoneFillMode, ZoneType
@@ -1391,6 +1396,22 @@ class IPCBoardAPI(BoardAPI):
             zone.clearance = from_mm(clearance)
             zone.min_thickness = from_mm(min_thickness)
             zone.priority = priority
+
+            # Pad-connection style (thermal relief vs solid flood). Set on the
+            # proto directly — the kipy wrapper exposes no setter. ZCS_FULL floods
+            # copper solidly up to the pad, which is what fully buries stitching
+            # vias; ZCS_THERMAL leaves the default spoked relief.
+            if pad_connection:
+                style = {
+                    "solid": 4, "full": 4,   # ZCS_FULL
+                    "thermal": 3,            # ZCS_THERMAL
+                    "none": 2,               # ZCS_NONE
+                }.get(str(pad_connection).lower())
+                if style is not None:
+                    try:
+                        zone._proto.copper_settings.connection.zone_connection = style
+                    except Exception as e:
+                        logger.warning(f"could not set zone pad connection: {e}")
 
             if name:
                 zone.name = name

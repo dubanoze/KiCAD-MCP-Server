@@ -619,6 +619,37 @@ export function registerRoutingTools(server: McpServer, callKicadScript: Functio
     },
   );
 
+  // Set a placed footprint's pad-to-zone connection mode
+  server.tool(
+    "set_pad_zone_connection",
+    "Set how a placed footprint's pads connect to copper pours (zone connection). 'solid' floods the pour right up to the pad — required to fully bury GND stitching vias/pads that 'thermal' relief would leave gapped; 'none' isolates; 'inherit' uses the zone's setting. Use 'pads' to limit to specific pad numbers and 'net' to limit to pads on one net (e.g. GND). SWIG backend; works live via the dual-mode bridge.",
+    {
+      reference: z.string().describe("Footprint reference designator (e.g. 'A1')."),
+      connection: z
+        .enum(["solid", "thermal", "none", "inherit"])
+        .describe("Pad-to-zone connection mode to apply."),
+      pads: z
+        .array(z.union([z.string(), z.number()]))
+        .optional()
+        .describe("Limit to these pad numbers (e.g. ['2']). Omit to apply to all matching pads."),
+      net: z
+        .string()
+        .optional()
+        .describe("Limit to pads on this net (e.g. 'GND')."),
+    },
+    async (args: any) => {
+      const result = await callKicadScript("set_pad_zone_connection", args);
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify(result, null, 2),
+          },
+        ],
+      };
+    },
+  );
+
   // Set grid tool
   server.tool(
     "set_grid",
