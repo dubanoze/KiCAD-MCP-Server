@@ -446,3 +446,28 @@ without touching the full-board GND/PWR planes that share the same net and layer
 **Why:** `delete_zones` filtered only by net+layer, so it could not remove a small local GND zone
 without also deleting the main GND plane on that layer. Area-bounding makes the cleanup surgical.
 SWIG path (the IPC handler ignores `maxAreaMm2` for now — kipy exposes no zone-area accessor).
+
+---
+
+## 22. `add_component` — sync per-project reference inside `(instances ...)` after clone
+
+**Added:** 2026-06-03 · `python/commands/component_schematic.py`
+(`ComponentManager._sync_instance_references`, called from `add_component`)
+
+`add_component` builds a new part by `clone()`-ing a `_TEMPLATE_*` symbol, then sets the new
+`uuid` and the `Reference` *property*. But `clone()` copies the template's `(instances ...)` block
+verbatim, so every `(project ... (path ... (reference "_TEMPLATE_...")))` entry still named the
+template. KiCad annotates from that **per-project reference**, not the property — so the cloned
+part read as unannotated/duplicate and the sheet was silently dropped from the netlist
+(comp count collapses, e.g. 47 → 21). Native eeschema schematics carry **two** project blocks
+(`"<project>"` + `"project"`); the new walker re-points the reference in **all** of them.
+
+**Why:** adding any dynamically-loaded symbol (3-pin BPF FL1, multi-unit parts) via the MCP tool
+hit this — it cost a long manual debug cycle (hand-fixing both project blocks). Now the tool does
+it. Verified on `mcu.kicad_sch`: cloning `XM4` yields instance refs `['XM4','XM4']`, sync to a new
+ref updates both → `['XM99','XM99']`. Raw-sexpr walk, best-effort (never raises). Pure-Python,
+no TS change; takes effect on backend restart.
+
+> NB: the **cache** half of this class of bug (lib_symbols parent must carry the `lib:` prefix,
+> sub-symbols `Name_0_1` must NOT) is already handled correctly by `dynamic_symbol_loader.py`
+> (`_extract_symbol_block` skips `_\d+_\d+` names; only the first/top-level name is prefixed).

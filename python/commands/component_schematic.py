@@ -163,6 +163,35 @@ class ComponentManager:
             return (fallback, False)
 
     @staticmethod
+    def _sync_instance_references(symbol: Any, reference: str) -> None:
+        """Re-point every reference inside a symbol's (instances ...) block to `reference`.
+
+        After clone() the instances block is a verbatim copy of the template's, so its
+        per-project (path ... (reference "X")) entries still name the template. KiCad uses
+        those for annotation (not the Reference property); leaving them stale yields
+        duplicate/blank annotation and a silently broken netlist. Walks the raw s-expr so
+        it covers any number of (project ...) blocks. Best-effort: never raises.
+        """
+        try:
+            raw = symbol.raw  # underlying nested-list s-expression
+        except AttributeError:
+            return
+
+        def walk(node, in_instances=False):
+            if not isinstance(node, list) or not node:
+                return
+            tag = str(node[0]) if not isinstance(node[0], list) else None
+            here = in_instances or tag == "instances"
+            # Inside instances, a (reference "X") leaf is the per-project annotation.
+            if here and tag == "reference" and len(node) >= 2:
+                node[1] = reference
+            for child in node:
+                if isinstance(child, list):
+                    walk(child, here)
+
+        walk(raw)
+
+    @staticmethod
     def add_component(
         schematic: Schematic, component_def: dict, schematic_path: Optional[Path] = None
     ) -> Any:
@@ -254,6 +283,14 @@ class ComponentManager:
 
             # Generate new UUID
             new_symbol.uuid.value = str(uuid.uuid4())
+
+            # Sync the per-project reference inside the (instances ...) block.
+            # clone() copies the template's instances block verbatim, so every
+            # (project ... (path ... (reference "_TEMPLATE_...")))  still carries
+            # the template refdes. KiCad annotates from THIS per-project reference,
+            # not the (property "Reference" ...) — a mismatch makes the part read as
+            # unannotated/duplicate and silently breaks the netlist. Re-point them all.
+            ComponentManager._sync_instance_references(new_symbol, reference)
 
             # NOTE: clone() already inserts the raw element into the schematic tree.
             # Calling schematic.symbol.append() again causes NamedCollection to detect
