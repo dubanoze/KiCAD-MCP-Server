@@ -182,6 +182,53 @@ C:\Users\Denis Fedorov\AppData\Local\Programs\KiCad\10.0\bin\python.exe -m pip i
 ```
 Round-trip time: ~5 min.  No Python compilation needed (Python files are read at runtime).
 
+## 9. `add_copper_pour` — IPC param-name fix (`outline`) + `priority`
+
+**Added:** 2026-06-02 · `python/kicad_interface.py` (`_ipc_add_copper_pour`) · `src/tools/routing.ts`
+
+### Bug
+The SWIG handler reads `params.get("outline", params.get("points", []))` (accepts both,
+falls back to board outline), but the IPC handler `_ipc_add_copper_pour` read **only**
+`params.get("points", [])`. The TS tool schema exposes the boundary as **`outline`**, so in
+IPC mode (KiCad GUI open) every `add_copper_pour` failed with *"At least 3 points are required"* —
+copper pours could not be created live. The existing F.Cu/In1.Cu zones had been made earlier
+in SWIG mode, masking the bug.
+
+### Fix
+- IPC handler now reads `params.get("outline") or params.get("points") or []` (same as SWIG).
+- Added optional `priority` to the TS schema (the IPC handler already forwarded it to
+  `add_zone`). Lets a GND plane override a lower-priority / netless zone on the same layer
+  without deleting it (delete_pcb_shape has no IPC path).
+
+Python is read at runtime → only `/mcp` reconnect needed; TS needed `npm run build`.
+
+### Bug #2 (same feature): `Zone.fill_mode` has no setter
+After the param fix, `add_zone` (IPC/kipy) still returned False. Log:
+`property 'fill_mode' of 'Zone' object has no setter`. In this kipy build `Zone.fill_mode`
+is read-only; assigning it raised `AttributeError` and aborted zone creation entirely
+(`python/kicad_api/ipc_backend.py::add_zone`). Fixed: try the property, fall back to the
+proto field, else keep KiCad's default solid fill — never abort the zone for fill mode.
+
+---
+
+## 10. `delete_zones` — remove stray/duplicate/netless copper zones
+
+**Added:** 2026-06-02 · `python/kicad_api/ipc_backend.py` (`delete_zones`) ·
+`python/kicad_interface.py` (`_ipc_delete_zones` + `_handle_delete_zones` swig fallback +
+route + IPC_CAPABLE + `_BOARD_MUTATING_COMMANDS`) · `src/tools/routing.ts`
+
+Filters by `layer` and/or `net` (`net=""` targets netless zones); `copperOnly` (default
+true) protects rule-area / keepout zones so antenna keepouts are never deleted. IPC path
+uses kipy `board.remove_items`; SWIG path uses `board.Remove`.
+
+**Why:** the 4-layer GND fill left a leftover **netless In2.Cu zone** that filled as floating
+copper overlapping the real GND plane. Zone fill *priority* does NOT exclude a no-net zone, and
+`delete_pcb_shape` (point-nearest) can't disambiguate two full-board zones sharing a bbox
+centre — so a net-filtered delete was needed. `delete_zones layer=In2.Cu net=""` removes
+exactly the stray.
+
+---
+
 ## . set_footprint_3d_model
 
 **Added:** 2026-06-02 · component.py / kicad_interface.py / src/tools/component.ts

@@ -511,6 +511,7 @@ class KiCADInterface:
             "add_copper_pour": self.routing_commands.add_copper_pour,
             "route_differential_pair": self.routing_commands.route_differential_pair,
             "refill_zones": self._handle_refill_zones,
+            "delete_zones": self._handle_delete_zones,
             # Design rule commands
             "set_design_rules": self.design_rule_commands.set_design_rules,
             "get_design_rules": self.design_rule_commands.get_design_rules,
@@ -638,6 +639,7 @@ class KiCADInterface:
         # Zone commands
         "add_copper_pour": "_ipc_add_copper_pour",
         "refill_zones": "_ipc_refill_zones",
+        "delete_zones": "_ipc_delete_zones",
         # Board commands
         "add_text": "_ipc_add_text",
         "add_board_text": "_ipc_add_text",
@@ -902,6 +904,7 @@ class KiCADInterface:
         "add_board_text",
         "add_copper_pour",
         "refill_zones",
+        "delete_zones",
         "import_svg_logo",
         "sync_schematic_to_board",
         "connect_passthrough",
@@ -5443,6 +5446,50 @@ class KiCADInterface:
             logger.error(f"Error launching KiCAD UI: {str(e)}")
             return {"success": False, "message": str(e)}
 
+    def _handle_delete_zones(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """Remove board zones matching layer/net filters (SWIG backend).
+
+        net="" matches netless zones; copperOnly=True (default) never removes
+        rule-area / keepout zones.
+        """
+        try:
+            import pcbnew
+
+            if not self.board:
+                return {"success": False, "message": "No board is loaded"}
+
+            layer = params.get("layer")
+            net = params.get("net")
+            copper_only = params.get("copperOnly", True)
+            layer_id = self.board.GetLayerID(layer) if layer else None
+            if layer is not None and layer_id is not None and layer_id < 0:
+                return {"success": False, "message": f"Unknown layer: {layer}"}
+
+            victims = []
+            for zone in list(self.board.Zones()):
+                if copper_only and zone.GetIsRuleArea():
+                    continue
+                if net is not None and zone.GetNetname() != net:
+                    continue
+                if layer_id is not None and not zone.GetLayerSet().Contains(layer_id):
+                    continue
+                victims.append(zone)
+
+            for zone in victims:
+                self.board.Remove(zone)
+            if victims:
+                self.board.SetModified()
+
+            return {
+                "success": True,
+                "message": f"Deleted {len(victims)} zone(s)",
+                "deleted": len(victims),
+                **self._backend_status(),
+            }
+        except Exception as e:
+            logger.error(f"delete_zones (swig) error: {e}")
+            return {"success": False, "message": str(e)}
+
     def _handle_refill_zones(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """Refill all copper pour zones on the board.
 
@@ -5691,7 +5738,9 @@ print("ok")
             net = params.get("net")
             clearance = params.get("clearance", 0.5)
             min_width = params.get("minWidth", 0.25)
-            points = params.get("points", [])
+            # Accept both "outline" (TS tool schema name) and "points" (legacy IPC name)
+            # so add_copper_pour behaves identically on the IPC and SWIG backends.
+            points = params.get("outline") or params.get("points") or []
             priority = params.get("priority", 0)
             fill_type = params.get("fillType", "solid")
             name = params.get("name", "")
@@ -5737,6 +5786,29 @@ print("ok")
             }
         except Exception as e:
             logger.error(f"IPC add_copper_pour error: {e}")
+            return {"success": False, "message": str(e)}
+
+    def _ipc_delete_zones(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """IPC handler for delete_zones - removes matching zones with real-time UI update"""
+        try:
+            layer = params.get("layer")
+            net = params.get("net")
+            copper_only = params.get("copperOnly", True)
+            count = self.ipc_board_api.delete_zones(
+                layer=layer, net_name=net, copper_only=copper_only
+            )
+            return {
+                "success": count >= 0,
+                "message": (
+                    f"Deleted {count} zone(s) (visible in KiCAD UI)"
+                    if count >= 0
+                    else "Failed to delete zones"
+                ),
+                "deleted": count,
+                **self._backend_status(),
+            }
+        except Exception as e:
+            logger.error(f"IPC delete_zones error: {e}")
             return {"success": False, "message": str(e)}
 
     def _ipc_refill_zones(self, params: Dict[str, Any]) -> Dict[str, Any]:

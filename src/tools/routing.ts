@@ -142,6 +142,12 @@ export function registerRoutingTools(server: McpServer, callKicadScript: Functio
       layer: z.string().describe("PCB layer"),
       net: z.string().describe("Net name"),
       clearance: z.number().optional().describe("Clearance in mm"),
+      priority: z
+        .number()
+        .optional()
+        .describe(
+          "Zone fill priority (higher wins overlaps). Use to make a GND plane override a lower-priority/netless zone on the same layer.",
+        ),
       outline: z
         .array(z.object({ x: z.number(), y: z.number() }))
         .optional()
@@ -463,6 +469,37 @@ export function registerRoutingTools(server: McpServer, callKicadScript: Functio
     {},
     async (args: any) => {
       const result = await callKicadScript("refill_zones", args);
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify(result, null, 2),
+          },
+        ],
+      };
+    },
+  );
+
+  // Delete zones tool
+  server.tool(
+    "delete_zones",
+    "Remove copper pour zones matching layer/net filters. Use to clean up stray, duplicate, or netless zones (e.g. a leftover no-net plane). net=\"\" matches netless zones; copperOnly (default true) protects rule-area / keepout zones (antenna keepouts stay safe). Works on the IPC backend (live UI) and SWIG.",
+    {
+      layer: z
+        .string()
+        .optional()
+        .describe("Restrict to this copper layer, e.g. 'In2.Cu'. Omit for any layer."),
+      net: z
+        .string()
+        .optional()
+        .describe('Match zones whose net equals this exactly. Pass "" to target netless zones. Omit for any net.'),
+      copperOnly: z
+        .boolean()
+        .optional()
+        .describe("When true (default), never delete rule-area / keepout zones."),
+    },
+    async (args: any) => {
+      const result = await callKicadScript("delete_zones", args);
       return {
         content: [
           {

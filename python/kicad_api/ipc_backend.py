@@ -1311,11 +1311,23 @@ class IPCBoardAPI(BoardAPI):
             if name:
                 zone.name = name
 
-            # Set fill mode
-            if fill_mode == "hatched":
-                zone.fill_mode = ZoneFillMode.ZFM_HATCHED
-            else:
-                zone.fill_mode = ZoneFillMode.ZFM_SOLID
+            # Set fill mode. Some kipy builds expose Zone.fill_mode as a read-only
+            # property (no setter) → attempting to assign raises AttributeError and
+            # aborts the whole zone creation. Try the property, fall back to the proto
+            # field, and finally just keep KiCad's default (solid) if neither works.
+            try:
+                mode = ZoneFillMode.ZFM_HATCHED if fill_mode == "hatched" else ZoneFillMode.ZFM_SOLID
+                try:
+                    zone.fill_mode = mode
+                except AttributeError:
+                    try:
+                        zone._proto.fill_mode = int(mode)
+                    except Exception:
+                        logger.warning(
+                            "kipy Zone.fill_mode is not settable; using default solid fill"
+                        )
+            except Exception:
+                logger.warning("Could not resolve fill mode; using default solid fill")
 
             # Create outline polyline
             outline = PolyLine()
@@ -1382,6 +1394,61 @@ class IPCBoardAPI(BoardAPI):
         except Exception as e:
             logger.error(f"Failed to get zones: {e}")
             return []
+
+    def delete_zones(
+        self,
+        layer: Optional[str] = None,
+        net_name: Optional[str] = None,
+        copper_only: bool = True,
+    ) -> int:
+        """Remove board zones matching the given filters.
+
+        Args:
+            layer: restrict to this copper layer name (e.g. "In2.Cu"); None = any.
+            net_name: restrict to zones whose net equals this exactly. Pass "" to match
+                      netless (no-net) zones. None = any net.
+            copper_only: when True, never touch rule-area / keepout zones (so antenna
+                         keepouts are safe).
+
+        Returns the number of zones removed, or -1 on error.
+        """
+        try:
+            from kipy.proto.board.board_types_pb2 import BoardLayer
+            from kipy.board_types import ZoneType
+
+            board = self._get_board()
+            layer_map = {
+                "F.Cu": BoardLayer.BL_F_Cu,
+                "B.Cu": BoardLayer.BL_B_Cu,
+                "In1.Cu": BoardLayer.BL_In1_Cu,
+                "In2.Cu": BoardLayer.BL_In2_Cu,
+                "In3.Cu": BoardLayer.BL_In3_Cu,
+                "In4.Cu": BoardLayer.BL_In4_Cu,
+            }
+            want_layer = layer_map.get(layer) if layer else None
+
+            victims = []
+            for zone in board.get_zones():
+                # Never delete rule areas / keepouts when copper_only is set.
+                if copper_only and hasattr(zone, "type") and zone.type != ZoneType.ZT_COPPER:
+                    continue
+                znet = zone.net.name if getattr(zone, "net", None) else ""
+                if net_name is not None and znet != net_name:
+                    continue
+                if want_layer is not None:
+                    zlayers = list(zone.layers) if hasattr(zone, "layers") else []
+                    if want_layer not in zlayers:
+                        continue
+                victims.append(zone)
+
+            if victims:
+                board.remove_items(victims)
+                self._notify("zones_deleted", {"count": len(victims), "layer": layer, "net": net_name})
+                logger.info(f"Deleted {len(victims)} zone(s) layer={layer} net={net_name!r}")
+            return len(victims)
+        except Exception as e:
+            logger.error(f"Failed to delete zones: {e}")
+            return -1
 
     def refill_zones(self) -> bool:
         """Refill all copper pour zones."""
