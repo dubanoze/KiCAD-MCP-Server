@@ -565,6 +565,60 @@ export function registerRoutingTools(server: McpServer, callKicadScript: Functio
     },
   );
 
+  // Assign a net to a footprint's copper graphics
+  server.tool(
+    "assign_footprint_graphic_net",
+    "Assign a net to a footprint's copper graphic shapes (KiCad 7+ copper PCB_SHAPEs are net-aware). Use to ground copper artwork that imported from Altium as net-less footprint graphics and now 'shorts' the surrounding pour — assigning the pour's net (e.g. GND) clears those clearance/shorting DRC conflicts. SWIG backend; works live via the dual-mode bridge.",
+    {
+      reference: z.string().describe("Footprint reference designator (e.g. 'A1')."),
+      net: z.string().describe("Net name to assign (e.g. 'GND')."),
+      layer: z
+        .string()
+        .optional()
+        .describe("Restrict to one copper layer (e.g. 'F.Cu'). Omit to net all copper graphics."),
+    },
+    async (args: any) => {
+      const result = await callKicadScript("assign_footprint_graphic_net", args);
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify(result, null, 2),
+          },
+        ],
+      };
+    },
+  );
+
+  // Promote a footprint's copper graphics to board-level tracks
+  server.tool(
+    "convert_footprint_graphics_to_tracks",
+    "Convert a footprint's copper graphic shapes (PCB_SHAPE lines/arcs) into genuine board-level tracks (PCB_TRACK/PCB_ARC) carrying a net. A KiCad footprint cannot hold real tracks/vias (FOOTPRINT::Add rejects PCB_TRACE_T), so copper imported from Altium primitives lands as net-less footprint graphics that a copper pour never connects to (zones keep clearance from graphics even on the same net). Promoting that geometry to real tracks — e.g. an antenna's GND ring — lets the pour integrate with it and clears the resulting clearance/shorting DRC errors. SWIG backend; works live via the dual-mode bridge.",
+    {
+      reference: z.string().describe("Footprint reference designator (e.g. 'A1')."),
+      net: z.string().describe("Net name the new tracks carry (e.g. 'GND')."),
+      layer: z
+        .string()
+        .optional()
+        .describe("Restrict to one copper layer (e.g. 'F.Cu'). Omit to convert all copper graphics."),
+      remove_source: z
+        .boolean()
+        .optional()
+        .describe("Delete the original graphics after conversion so copper is not duplicated (default true)."),
+    },
+    async (args: any) => {
+      const result = await callKicadScript("convert_footprint_graphics_to_tracks", args);
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify(result, null, 2),
+          },
+        ],
+      };
+    },
+  );
+
   // Set grid tool
   server.tool(
     "set_grid",

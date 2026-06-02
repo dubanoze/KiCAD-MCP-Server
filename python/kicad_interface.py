@@ -514,6 +514,8 @@ class KiCADInterface:
             "delete_zones": self._handle_delete_zones,
             "set_layer_name": self._handle_set_layer_name,
             "update_footprints_from_library": self._handle_update_footprints_from_library,
+            "assign_footprint_graphic_net": self._handle_assign_footprint_graphic_net,
+            "convert_footprint_graphics_to_tracks": self._handle_convert_footprint_graphics_to_tracks,
             "set_grid": self._handle_set_grid_no_gui,
             # Design rule commands
             "set_design_rules": self.design_rule_commands.set_design_rules,
@@ -693,6 +695,18 @@ class KiCADInterface:
     def _try_enable_ipc_backend(self, force: bool = False) -> bool:
         """Try to switch an already-running interface to IPC when KiCAD is available."""
         if KICAD_BACKEND == "swig":
+            return False
+
+        # A previous IPC session may still be flagged (use_ipc=True) after the
+        # user closed KiCad. Without this, IPC-capable commands keep routing to a
+        # dead socket and fail with timeouts instead of transparently using SWIG.
+        # Demote to SWIG when KiCad is no longer running; the reconnect path below
+        # re-promotes if it comes back. (Keyed on the process, not is_connected(),
+        # so a momentarily *busy* editor is not mistaken for a closed one.)
+        if self.use_ipc and not KiCADProcessManager.is_running():
+            logger.info("KiCad no longer running; demoting stale IPC session to SWIG")
+            self.use_ipc = False
+            self.ipc_board_api = None
             return False
 
         ipc_backend = getattr(self, "ipc_backend", None)
@@ -1008,6 +1022,8 @@ class KiCADInterface:
     _SWIG_SELF_SAVING_COMMANDS = {
         "set_layer_name",
         "update_footprints_from_library",
+        "assign_footprint_graphic_net",
+        "convert_footprint_graphics_to_tracks",
     }
 
     @staticmethod
@@ -5544,6 +5560,188 @@ class KiCADInterface:
             return {"success": True, **result, **self._backend_status()}
         except Exception as e:
             logger.error(f"Error launching KiCAD UI: {str(e)}")
+            return {"success": False, "message": str(e)}
+
+    def _handle_assign_footprint_graphic_net(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """Assign a net to a footprint's copper graphic shapes (SWIG).
+
+        KiCad 7+ copper PCB_SHAPEs are net-aware. Altium copper primitives import
+        as net-less footprint graphics that then "short" the surrounding pour;
+        grounding them (same net as the pour/vias) clears those DRC conflicts.
+        `reference` selects the footprint, `net` the net name, optional `layer`
+        restricts to one copper layer (default: all copper graphics).
+        """
+        try:
+            import pcbnew
+
+            if not self.board:
+                return {"success": False, "message": "No board loaded"}
+
+            ref = params.get("reference")
+            net_name = params.get("net")
+            if not ref or net_name is None:
+                return {"success": False, "message": "reference and net are required"}
+
+            fp = self.board.FindFootprintByReference(ref)
+            if not fp:
+                return {"success": False, "message": f"Footprint '{ref}' not found"}
+
+            net = self.board.FindNet(net_name)
+            if net is None:
+                return {"success": False, "message": f"Net '{net_name}' not found on board"}
+
+            layer = params.get("layer")
+            layer_id = self.board.GetLayerID(layer) if layer else None
+            if layer is not None and (layer_id is None or layer_id < 0):
+                return {"success": False, "message": f"Unknown layer: {layer}"}
+
+            assigned = 0
+            skipped = 0
+            for g in fp.GraphicalItems():
+                gl = g.GetLayer()
+                if not pcbnew.IsCopperLayer(gl):
+                    continue
+                if layer_id is not None and gl != layer_id:
+                    continue
+                if hasattr(g, "SetNet"):
+                    g.SetNet(net)
+                    assigned += 1
+                else:
+                    skipped += 1
+
+            saved = False
+            if assigned:
+                self.board.SetModified()
+                try:
+                    self.board.Save(self.board.GetFileName())
+                    saved = True
+                except Exception as e:
+                    return {"success": False, "message": f"save failed: {e}", "assigned": assigned}
+
+            return {
+                "success": True,
+                "message": f"{ref}: assigned net '{net_name}' to {assigned} copper graphic(s)"
+                + (f", {skipped} not net-capable" if skipped else ""),
+                "assigned": assigned,
+                "skipped": skipped,
+                "saved": saved,
+                **self._backend_status(),
+            }
+        except Exception as e:
+            logger.error(f"assign_footprint_graphic_net error: {e}")
+            return {"success": False, "message": str(e)}
+
+    def _handle_convert_footprint_graphics_to_tracks(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """Promote a footprint's copper graphics (PCB_SHAPE) to board-level tracks.
+
+        A KiCad FOOTPRINT cannot hold real tracks/vias — ``FOOTPRINT::Add()``
+        rejects ``PCB_TRACE_T`` outright — so copper imported from Altium
+        primitives lands as net-less footprint graphics that never integrate
+        with a copper pour (a zone keeps clearance from graphics even on the
+        same net). This converts each copper line/arc graphic into a genuine
+        ``PCB_TRACK``/``PCB_ARC`` on the board, carrying ``net`` so the pour
+        connects to it. ``reference`` selects the footprint; optional ``layer``
+        restricts to one copper layer; ``remove_source`` (default True) deletes
+        the original graphics so copper is not duplicated.
+        """
+        try:
+            import pcbnew
+
+            if not self.board:
+                return {"success": False, "message": "No board loaded"}
+
+            ref = params.get("reference")
+            net_name = params.get("net")
+            if not ref or net_name is None:
+                return {"success": False, "message": "reference and net are required"}
+
+            fp = self.board.FindFootprintByReference(ref)
+            if not fp:
+                return {"success": False, "message": f"Footprint '{ref}' not found"}
+
+            net = self.board.FindNet(net_name)
+            if net is None:
+                return {"success": False, "message": f"Net '{net_name}' not found on board"}
+            netcode = net.GetNetCode()
+
+            layer = params.get("layer")
+            layer_id = self.board.GetLayerID(layer) if layer else None
+            if layer is not None and (layer_id is None or layer_id < 0):
+                return {"success": False, "message": f"Unknown layer: {layer}"}
+
+            remove_source = params.get("remove_source", True)
+            width_fallback = pcbnew.FromMM(0.2)
+
+            # Snapshot the targets first: mutating GraphicalItems while iterating
+            # it is unsafe. A footprint shape's GetStart/GetEnd are already in
+            # board coordinates (the placement transform is baked in), so the
+            # geometry copies straight onto a board track.
+            targets = []
+            skipped_shapes = 0
+            for g in fp.GraphicalItems():
+                if not isinstance(g, pcbnew.PCB_SHAPE):
+                    continue
+                gl = g.GetLayer()
+                if not pcbnew.IsCopperLayer(gl):
+                    continue
+                if layer_id is not None and gl != layer_id:
+                    continue
+                if g.GetShape() in (pcbnew.SHAPE_T_SEGMENT, pcbnew.SHAPE_T_ARC):
+                    targets.append(g)
+                else:
+                    skipped_shapes += 1
+
+            converted = 0
+            for g in targets:
+                gl = g.GetLayer()
+                width = g.GetWidth()
+                if width <= 0:
+                    width = width_fallback
+                if g.GetShape() == pcbnew.SHAPE_T_ARC:
+                    track = pcbnew.PCB_ARC(self.board)
+                    track.SetStart(g.GetStart())
+                    track.SetMid(g.GetArcMid())
+                    track.SetEnd(g.GetEnd())
+                else:
+                    track = pcbnew.PCB_TRACK(self.board)
+                    track.SetStart(g.GetStart())
+                    track.SetEnd(g.GetEnd())
+                track.SetWidth(width)
+                track.SetLayer(gl)
+                track.SetNetCode(netcode)
+                self.board.Add(track)
+                converted += 1
+
+            if remove_source and converted:
+                for g in targets:
+                    fp.Remove(g)
+
+            saved = False
+            if converted:
+                self.board.SetModified()
+                try:
+                    self.board.Save(self.board.GetFileName())
+                    saved = True
+                except Exception as e:
+                    return {"success": False, "message": f"save failed: {e}", "converted": converted}
+
+            msg = f"{ref}: converted {converted} copper graphic(s) to board track(s) on net '{net_name}'"
+            if skipped_shapes:
+                msg += f", {skipped_shapes} non-line/arc shape(s) left in place"
+            if not remove_source:
+                msg += ", source graphics kept"
+
+            return {
+                "success": True,
+                "message": msg,
+                "converted": converted,
+                "skipped": skipped_shapes,
+                "removed_source": bool(remove_source and converted),
+                "saved": saved,
+                **self._backend_status(),
+            }
+        except Exception as e:
+            logger.error(f"convert_footprint_graphics_to_tracks error: {e}")
             return {"success": False, "message": str(e)}
 
     def _handle_update_footprints_from_library(self, params: Dict[str, Any]) -> Dict[str, Any]:

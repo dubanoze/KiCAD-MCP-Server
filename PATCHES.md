@@ -324,6 +324,24 @@ Result: SWIG and IPC tools operate on the same open board with no manual mode sw
 
 ---
 
+## 16. `assign_footprint_graphic_net` — net a footprint's copper artwork
+
+**Added:** 2026-06-02 · `python/kicad_interface.py`
+(`_handle_assign_footprint_graphic_net` + route + `_SWIG_SELF_SAVING_COMMANDS`) ·
+`src/tools/routing.ts`
+
+Assigns a net to a footprint's copper graphic shapes via `PCB_SHAPE.SetNet` (KiCad 7+ copper
+shapes are net-aware). `reference` + `net`, optional `layer` to restrict to one copper layer.
+
+**Why:** the Altium niche antenna imports its copper ground ring as **net-less footprint
+graphics** (Altium copper primitives → KiCad `fp_line` on F.Cu, with no net). That copper
+physically touches the GND via-fence and the GND pour, so DRC reports *shorting_items "GND and
+‹none›"*, zone-clearance 0 mm and solder-mask bridges. Grounding the shapes (same net as the
+pour/vias) clears the conflict without deleting the antenna artwork. SWIG path that self-saves;
+listed in `_SWIG_SELF_SAVING_COMMANDS` so the dual-mode bridge applies it to the live board.
+
+---
+
 ## 15. `set_grid` — change the live editor grid
 
 **Added:** 2026-06-02 · `python/kicad_api/ipc_backend.py` (`IPCBoardAPI.set_grid`) ·
@@ -337,3 +355,40 @@ Steps the active PCB-editor grid via KiCad `run_action`: `finer`/`coarser`
 the editor frame, not the board/project file — so stepping through the configured grid list is
 the only available control. IPC-only: the SWIG route returns a "needs KiCad open over IPC"
 message. Not board-mutating, so the dual-mode bridge does not engage.
+
+---
+
+## 17. `convert_footprint_graphics_to_tracks` — promote footprint copper graphics to board tracks
+
+**Added:** 2026-06-02 · `python/kicad_interface.py`
+(`_handle_convert_footprint_graphics_to_tracks` + route + `_SWIG_SELF_SAVING_COMMANDS`) ·
+`src/tools/routing.ts`
+
+Converts a footprint's copper graphic shapes (`PCB_SHAPE` segments/arcs) into genuine
+board-level tracks (`PCB_TRACK`/`PCB_ARC`) carrying a given net. `reference` + `net`, optional
+`layer` to restrict to one copper layer, `remove_source` (default true) to delete the originals.
+
+**Why:** a KiCad `FOOTPRINT` cannot hold real tracks/vias — `FOOTPRINT::Add()` rejects
+`PCB_TRACE_T` outright (`BOARD_ITEM type (13) not handled`), so Altium track primitives import as
+net-less `fp_line` graphics. A copper pour never integrates with graphics (a zone keeps clearance
+from a shape even on the same net), so the niche antenna's GND ring shows up as `zone clearance
+0 mm` / `shorting_items` DRC errors that grounding alone (patch #16) cannot clear. Promoting the
+geometry to real tracks lets the pour connect to it and removes the violations. A footprint
+shape's `GetStart`/`GetEnd` are already in board coordinates (placement transform baked in), so
+the geometry copies straight onto a track; stroke width carries over (0.2 mm fallback). SWIG path
+that self-saves; listed in `_SWIG_SELF_SAVING_COMMANDS` so the dual-mode bridge applies it live.
+
+---
+
+## 18. Demote a stale IPC session to SWIG when KiCad has closed
+
+**Added:** 2026-06-02 · `python/kicad_interface.py` (`_try_enable_ipc_backend`)
+
+When `use_ipc` is set but the KiCad process is no longer running, `_try_enable_ipc_backend` now
+clears `use_ipc`/`ipc_board_api` and returns `False`, so the next command falls back to the SWIG
+file backend instead of routing to a dead socket.
+
+**Why:** after the user closed pcbnew, board-mutating commands kept being routed to the stale IPC
+session and failed (`KiCad is busy` / no board), forcing a manual `/mcp` reconnect. Checking
+`KiCadProcessManager.is_running()` and demoting on the spot makes the backend self-heal — the
+session transparently continues on SWIG once the GUI is gone.
