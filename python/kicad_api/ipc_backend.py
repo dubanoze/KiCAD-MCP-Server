@@ -1185,6 +1185,33 @@ class IPCBoardAPI(BoardAPI):
             logger.error(f"Failed to delete traces: {e}")
             return -1
 
+    def save_live_board(self) -> bool:
+        """Save the live (GUI) board document to disk via the IPC API."""
+        try:
+            self._get_board().save()
+            return True
+        except Exception as e:
+            logger.error(f"save_live_board failed: {e}")
+            return False
+
+    def revert_live_board(self) -> bool:
+        """Reload the live (GUI) board from disk — discards any unsaved GUI edits
+        and makes the open editor reflect the current file contents."""
+        try:
+            self._get_board().revert()
+            return True
+        except Exception as e:
+            logger.error(f"revert_live_board failed: {e}")
+            return False
+
+    def get_board_filename(self) -> Optional[str]:
+        """Return the file path of the live board, or None."""
+        try:
+            return self._get_board().name
+        except Exception as e:
+            logger.warning(f"get_board_filename failed: {e}")
+            return None
+
     def get_tracks(self) -> List[Dict[str, Any]]:
         """Get all tracks on the board."""
         try:

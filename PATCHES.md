@@ -288,3 +288,36 @@ current geometry. SWIG path — run with the GUI closed.
 Assign/replace a placed footprint's 3D model (FP_3DMODEL). Use when a footprint's bundled
 model .step is missing in the install (e.g. USB_C_Receptacle_HRO right-angle) — point it at an
 available model such as GCT_USB4105 ...Horizontal.step. Board-mutating (auto-save).
+
+---
+
+## 14. Dual-backend bridge — SWIG board writes while the GUI is open over IPC
+
+**Added:** 2026-06-02 · `python/kicad_interface.py`
+(`_live_gui_bridge_active`, `_bridge_gui_to_disk`, `_bridge_disk_to_gui`, `handle_command`
+hook, `_SWIG_SELF_SAVING_COMMANDS`, `_auto_save_board` pcbnew import) ·
+`python/kicad_api/ipc_backend.py` (`save_live_board`, `revert_live_board`, `get_board_filename`)
+
+### Problem
+SWIG handlers mutate `self.board`, a file-backed copy. When KiCad is open over IPC that copy is
+**not** the document the user sees, so SWIG-only tools (`set_layer_name`,
+`update_footprints_from_library`, `delete_zones`, `delete_pcb_shape`, …) edited a stale board and
+the GUI silently diverged from disk — forcing a close / `/mcp reconnect` / reopen dance for every
+such command.
+
+### Fix
+For a board-modifying SWIG command issued while IPC is live, `handle_command` brackets the handler:
+1. `_bridge_gui_to_disk` — `board.save()` (kipy) flushes the live document to disk, then
+   `self.board` is reloaded from it, so the SWIG edit is applied on top of the current GUI state.
+2. the SWIG handler runs and persists (generic auto-save or self-save).
+3. `_bridge_disk_to_gui` — `board.revert()` (kipy) reloads the open document from disk so the GUI
+   reflects the edit; the IPC board handle is re-fetched (revert invalidates it).
+
+Gated by `_live_gui_bridge_active` (IPC up + command SWIG-only + board-modifying) and degrades
+safely — any failed step logs and falls back to the previous behaviour. Also fixes
+`_auto_save_board`, which used `pcbnew` without importing it (the module-level import is skipped
+when the IPC backend is selected), so SWIG auto-save failed with *"name 'pcbnew' is not defined"*
+whenever the GUI was open.
+
+Result: SWIG and IPC tools operate on the same open board with no manual mode switching — the
+"run with the GUI closed" caveat on patches 10-13 no longer applies.

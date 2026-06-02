@@ -717,6 +717,80 @@ class KiCADInterface:
             logger.info(f"Runtime IPC connection not available: {e}")
             return False
 
+    def _live_gui_bridge_active(self, command: str) -> bool:
+        """Whether a SWIG-path board write should be bridged to the live GUI.
+
+        SWIG handlers mutate ``self.board`` — a file-backed copy that is *not*
+        the document KiCad shows when it is open over IPC. A naive SWIG write
+        would therefore edit a stale board and let the GUI silently diverge from
+        disk. For board-modifying SWIG commands we instead bracket the handler
+        with :meth:`_bridge_gui_to_disk` / :meth:`_bridge_disk_to_gui`, so the
+        edit is applied on top of — and reflected back into — the open document.
+        """
+        return (
+            self.use_ipc
+            and getattr(self, "ipc_backend", None) is not None
+            and command not in self.IPC_CAPABLE_COMMANDS
+            and (
+                command in self._BOARD_MUTATING_COMMANDS
+                or command in self._SWIG_SELF_SAVING_COMMANDS
+            )
+        )
+
+    def _bridge_gui_to_disk(self) -> bool:
+        """Flush the live GUI board to disk and reload ``self.board`` from it.
+
+        Called before a bridged SWIG command so the SWIG edit is applied on top
+        of the document the user currently sees. Returns True if the SWIG board
+        was refreshed from the live state; False (with a warning) if the bridge
+        could not engage, in which case the command falls back to editing the
+        cached board.
+        """
+        board_api = getattr(self, "ipc_board_api", None)
+        if board_api is None:
+            return False
+        try:
+            board_path = None
+            board = getattr(self, "board", None)
+            if board is not None:
+                try:
+                    board_path = board.GetFileName()
+                except Exception:
+                    board_path = None
+            if not board_path:
+                board_path = board_api.get_board_filename()
+            if not board_path:
+                return False
+
+            board_api.save_live_board()  # live GUI document -> disk
+            fresh = self._safe_load_board(board_path)  # disk -> SWIG board
+            if fresh is None:
+                return False
+            self.board = fresh
+            self.project_commands.board = fresh
+            self._update_command_handlers()
+            self._record_board_signature()
+            return True
+        except Exception as e:
+            logger.warning(
+                f"GUI->disk bridge failed; SWIG command will use the cached board: {e}"
+            )
+            return False
+
+    def _bridge_disk_to_gui(self) -> None:
+        """Reload the live GUI from disk after a bridged SWIG command wrote it,
+        so the open document reflects the change. The IPC board handle is
+        invalidated by the revert, so it is re-fetched afterwards.
+        """
+        board_api = getattr(self, "ipc_board_api", None)
+        if board_api is None:
+            return
+        try:
+            board_api.revert_live_board()  # disk -> live GUI document
+            self._refresh_ipc_board_api()
+        except Exception as e:
+            logger.warning(f"disk->GUI bridge failed; GUI may need a manual reload: {e}")
+
     def _backend_status(self) -> Dict[str, Any]:
         """Return backend status fields for command responses."""
         ipc_backend = getattr(self, "ipc_backend", None)
@@ -784,6 +858,14 @@ class KiCADInterface:
 
             # Get the handler for the command
             handler = self.command_routes.get(command)
+
+            # Dual-backend bridge: a board-modifying SWIG command issued while
+            # KiCad is open over IPC. Flush the live document to disk and rebase
+            # the SWIG board onto it, so the edit applies to what the user sees
+            # rather than a stale file-backed copy.
+            bridged = self._live_gui_bridge_active(command) if handler else False
+            if bridged:
+                bridged = self._bridge_gui_to_disk()
 
             if handler:
                 # Execute the command
@@ -868,6 +950,10 @@ class KiCADInterface:
                                 result.setdefault("warnings", []).append(save_status["warning"])
                             result["autoSave"] = save_status
 
+                # Reflect the bridged SWIG edit back into the open GUI document.
+                if bridged and isinstance(result, dict) and result.get("success", False):
+                    self._bridge_disk_to_gui()
+
                 return result
             else:
                 logger.error(f"Unknown command: {command}")
@@ -911,6 +997,15 @@ class KiCADInterface:
         "sync_schematic_to_board",
         "connect_passthrough",
         "connect_to_net",
+    }
+
+    # SWIG-path commands that modify the board but write themselves to disk
+    # (rather than relying on the generic auto-save). They are not in
+    # _BOARD_MUTATING_COMMANDS, but they still need the live-GUI bridge, so the
+    # bridge predicate checks both sets.
+    _SWIG_SELF_SAVING_COMMANDS = {
+        "set_layer_name",
+        "update_footprints_from_library",
     }
 
     @staticmethod
@@ -1142,6 +1237,7 @@ class KiCADInterface:
 
         # Write the board.
         try:
+            import pcbnew  # local: module-level import is skipped when IPC backend is selected
             pcbnew.SaveBoard(board_path, self.board)
             logger.debug(f"Auto-saved board to: {board_path}")
             self._board_disk_signature = self._disk_signature(board_path)
