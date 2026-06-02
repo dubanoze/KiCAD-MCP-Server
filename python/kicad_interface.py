@@ -512,6 +512,8 @@ class KiCADInterface:
             "route_differential_pair": self.routing_commands.route_differential_pair,
             "refill_zones": self._handle_refill_zones,
             "delete_zones": self._handle_delete_zones,
+            "set_layer_name": self._handle_set_layer_name,
+            "update_footprints_from_library": self._handle_update_footprints_from_library,
             # Design rule commands
             "set_design_rules": self.design_rule_commands.set_design_rules,
             "get_design_rules": self.design_rule_commands.get_design_rules,
@@ -5446,6 +5448,166 @@ class KiCADInterface:
             logger.error(f"Error launching KiCAD UI: {str(e)}")
             return {"success": False, "message": str(e)}
 
+    def _handle_update_footprints_from_library(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """Re-load footprints from their library (SWIG), like Tools->Update Footprints
+        from Library. Preserves position/orientation/side/reference/value and re-maps
+        nets by pad number. `references` (list or str) limits scope; omit = all.
+        """
+        try:
+            import os, re, pcbnew
+
+            if not self.board:
+                return {"success": False, "message": "No board loaded"}
+
+            refs = params.get("references")
+            if isinstance(refs, str):
+                refs = [refs]
+            only = set(refs) if refs else None
+
+            board_path = self.board.GetFileName()
+            board_dir = os.path.dirname(board_path)
+
+            # nickname -> library path from project + global fp-lib-table
+            nickmap = {}
+            candidates = [os.path.join(board_dir, "fp-lib-table")]
+            roaming = os.path.join(os.path.expanduser("~"), "AppData", "Roaming", "kicad")
+            for ver in ("10.0", "9.0"):
+                candidates.append(os.path.join(roaming, ver, "fp-lib-table"))
+            for tbl in candidates:
+                if not os.path.exists(tbl):
+                    continue
+                try:
+                    txt = open(tbl, encoding="utf-8").read()
+                except Exception:
+                    continue
+                for m in re.finditer(
+                    r'\(name\s+"?([^"()\s]+)"?\)[^()]*\(type[^()]*\)[^()]*\(uri\s+"?([^"()]+?)"?\)',
+                    txt,
+                ):
+                    nick, uri = m.group(1), m.group(2)
+                    uri = uri.replace("${KIPRJMOD}", board_dir).replace("$(KIPRJMOD)", board_dir)
+                    uri = os.path.expandvars(uri)
+                    nickmap.setdefault(nick, uri)
+
+            updated, failed = [], []
+            for fp in list(self.board.GetFootprints()):
+                ref = fp.GetReference()
+                if only and ref not in only:
+                    continue
+                fpid = fp.GetFPID()
+                lib = str(fpid.GetLibNickname())
+                name = str(fpid.GetLibItemName())
+                libpath = nickmap.get(lib)
+                if not libpath or not os.path.exists(libpath):
+                    failed.append(f"{ref}: lib '{lib}' path not resolved")
+                    continue
+                try:
+                    newfp = pcbnew.FootprintLoad(libpath, name)
+                except Exception as e:
+                    failed.append(f"{ref}: load error {e}")
+                    continue
+                if newfp is None:
+                    failed.append(f"{ref}: '{name}' not in lib '{lib}'")
+                    continue
+
+                old_pos = fp.GetPosition()
+                old_orient = fp.GetOrientation()
+                old_flip = fp.IsFlipped()
+                old_pads = fp.GetPadCount()
+                netmap = {}
+                for p in fp.Pads():
+                    num = p.GetNumber()
+                    if num:
+                        netmap.setdefault(num, p.GetNet())
+
+                newfp.SetReference(ref)
+                newfp.SetValue(fp.GetValue())
+                newfp.SetFPID(fpid)
+                self.board.Add(newfp)
+                if old_flip != newfp.IsFlipped():
+                    newfp.Flip(old_pos, False)
+                newfp.SetPosition(old_pos)
+                newfp.SetOrientation(old_orient)
+                for p in newfp.Pads():
+                    if p.GetNumber() in netmap and netmap[p.GetNumber()] is not None:
+                        p.SetNet(netmap[p.GetNumber()])
+                self.board.Remove(fp)
+                updated.append(f"{ref}: {old_pads}->{newfp.GetPadCount()} pads")
+
+            saved = False
+            if updated:
+                self.board.SetModified()
+                try:
+                    self.board.Save(board_path)
+                    saved = True
+                except Exception as e:
+                    failed.append(f"save error: {e}")
+
+            return {
+                "success": True,
+                "updated": updated,
+                "failed": failed,
+                "saved": saved,
+                **self._backend_status(),
+            }
+        except Exception as e:
+            logger.error(f"update_footprints_from_library error: {e}")
+            return {"success": False, "message": str(e)}
+
+    def _handle_set_layer_name(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """Rename a board layer's display name (SWIG backend).
+
+        Fixes layer-table corruption such as a silkscreen layer mislabelled with a
+        copper-layer name. Target by numeric `layerId` (unambiguous) or canonical
+        `layer` name. Empty/omitted `name` reverts the layer to its default name.
+        """
+        try:
+            if not self.board:
+                return {"success": False, "message": "No board loaded"}
+
+            layer_id = params.get("layerId")
+            if layer_id is None:
+                lname = params.get("layer")
+                if not lname:
+                    return {"success": False, "message": "Provide layerId (int) or layer (name)"}
+                layer_id = self.board.GetLayerID(lname)
+                if layer_id is None or layer_id < 0:
+                    return {"success": False, "message": f"Unknown layer: {lname}"}
+            layer_id = int(layer_id)
+
+            canonical = self.board.GetStandardLayerName(layer_id)
+            old = self.board.GetLayerName(layer_id)
+            new = params.get("name") or canonical  # empty -> revert to default
+
+            self.board.SetLayerName(layer_id, new)
+            self.board.SetModified()
+
+            # Save directly (the generic auto-save path is unreliable on the SWIG
+            # backend), so the rename actually reaches disk.
+            saved = False
+            save_error = None
+            try:
+                fn = self.board.GetFileName()
+                self.board.Save(fn)
+                saved = True
+            except Exception as _se:
+                save_error = str(_se)
+
+            return {
+                "success": True,
+                "message": f"Layer {layer_id}: '{old}' -> '{new}' (canonical {canonical})",
+                "layerId": layer_id,
+                "old": old,
+                "new": new,
+                "canonical": canonical,
+                "saved": saved,
+                "saveError": save_error,
+                **self._backend_status(),
+            }
+        except Exception as e:
+            logger.error(f"set_layer_name error: {e}")
+            return {"success": False, "message": str(e)}
+
     def _handle_delete_zones(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """Remove board zones matching layer/net filters (SWIG backend).
 
@@ -6040,11 +6202,28 @@ print("ok")
             return {"success": False, "message": str(e)}
 
     def _ipc_delete_trace(self, params: Dict[str, Any]) -> Dict[str, Any]:
-        """IPC handler for delete_trace - Note: IPC doesn't support direct trace deletion yet"""
-        # IPC API doesn't have a direct delete track method
-        # Fall back to SWIG for this operation
-        logger.info("delete_trace: Falling back to SWIG (IPC doesn't support trace deletion)")
-        return self.routing_commands.delete_trace(params)
+        """IPC handler for delete_trace - net-based bulk delete via kipy remove_items.
+
+        Operates on the LIVE board in one transaction (no SWIG-proxy dehydration).
+        net="*" deletes all tracks (+ vias when includeVias). UUID/position deletes
+        are uncommon and fall back to the SWIG path.
+        """
+        net = params.get("net")
+        if not net:
+            logger.info("delete_trace (uuid/position): falling back to SWIG")
+            return self.routing_commands.delete_trace(params)
+        try:
+            include_vias = params.get("includeVias", False)
+            count = self.ipc_board_api.delete_traces(net=net, include_vias=include_vias)
+            return {
+                "success": count >= 0,
+                "message": f"Deleted {count} tracks/vias on net '{net}' (live)",
+                "deletedCount": count,
+                **self._backend_status(),
+            }
+        except Exception as e:
+            logger.error(f"IPC delete_trace error: {e}")
+            return {"success": False, "message": str(e)}
 
     def _ipc_query_traces(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """IPC handler for query_traces - reads traces from the live KiCAD board."""

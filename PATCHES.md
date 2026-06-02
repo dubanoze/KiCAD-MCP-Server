@@ -229,7 +229,59 @@ exactly the stray.
 
 ---
 
-## . set_footprint_3d_model
+## 11. `set_layer_name` — fix a layer's display name
+
+**Added:** 2026-06-02 · `python/kicad_interface.py` (`_handle_set_layer_name` + route +
+`_BOARD_MUTATING_COMMANDS`) · `src/tools/routing.ts`
+
+Renames a board layer via `board.SetLayerName`. Target by numeric `layerId` (unambiguous when
+a custom name is duplicated) or canonical `layer` name; empty `name` reverts to default.
+
+**Why:** the board (generated via kicad-skip/MCP) had **F.SilkS (id 5) mislabelled "In2.Cu"**,
+so the front silkscreen showed up under the copper layer's name — `GetLayerName` returned
+"In2.Cu" for both id 5 (silk) and id 6 (real copper), which masqueraded as a phantom copper
+defect. kipy/IPC can read layer names but not set them (`get_layer_name` only), so this is a
+SWIG-path tool: **KiCad GUI must be closed** (IPC active leaves `self.board` stale). Fix:
+`set_layer_name layerId=5 name="F.Silkscreen"`.
+
+---
+
+## 12. `delete_trace` — real IPC implementation (kipy remove_items)
+
+**Added:** 2026-06-02 · `python/kicad_api/ipc_backend.py` (`delete_traces`) ·
+`python/kicad_interface.py` (`_ipc_delete_trace`)
+
+`_ipc_delete_trace` previously just `return self.routing_commands.delete_trace(params)`
+— i.e. it ran the SWIG path on `self.board`, a copy **separate from the live IPC GUI
+board**. So deletions never reached the GUI/disk, and the SWIG proxy **dehydrated after
+the first mutation** (`'SwigPyObject' object is not iterable`) — a parallel batch had
+only its first call succeed.
+
+Now net-based deletes use kipy `board.remove_items` on the live board in a single
+transaction: `delete_traces(net, include_vias)` gathers `get_tracks()`/`get_vias()`
+objects (net `"*"`/None = all) and removes them at once — no per-item dehydration, visible
+live. `delete_trace net="*" includeVias=true` clears every track+via in one call. UUID/
+position deletes still fall back to SWIG.
+
+---
+
+## 13. `update_footprints_from_library` — re-load placed footprints from library
+
+**Added:** 2026-06-02 · `python/kicad_interface.py` (`_handle_update_footprints_from_library`
++ route) · `src/tools/routing.ts`
+
+KiCad's Tools->Update Footprints from Library, headless. Re-loads each placed footprint from
+its library (`FootprintLoad`, fresh from disk — no GUI cache), preserving
+position/orientation/side/reference/value and re-mapping nets by pad number. `references`
+limits scope (e.g. `['A1']`); omit = all.
+
+**Why:** after re-importing the Altium niche antenna `.PcbLib` (which has 2 pads + 11 vias +
+copper traces) into our project library, the board's `A1` instance was still the old stripped
+2-pad version. `sync_schematic_to_board` only assigns nets (not footprint geometry);
+`place_component`/`replace_component` couldn't resolve a project fp-lib footprint; and the GUI
+"Update from Library" served a **stale cached** 2-pad footprint (the window was opened before
+the library was rewritten). This tool reads the library file directly, so it always gets the
+current geometry. SWIG path — run with the GUI closed.
 
 **Added:** 2026-06-02 · component.py / kicad_interface.py / src/tools/component.ts
 

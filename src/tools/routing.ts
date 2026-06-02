@@ -511,6 +511,60 @@ export function registerRoutingTools(server: McpServer, callKicadScript: Functio
     },
   );
 
+  // Update footprints from library tool
+  server.tool(
+    "update_footprints_from_library",
+    "Re-load placed footprints from their library (equivalent to Tools -> Update Footprints from Library). Preserves position/orientation/side/reference/value and re-maps nets by pad number. Use after a library footprint changed (e.g. a re-imported Altium footprint that gained vias/pads). SWIG backend; KiCad GUI should be closed. Reads the library fresh from disk (no GUI cache).",
+    {
+      references: z
+        .array(z.string())
+        .optional()
+        .describe("Reference designators to update (e.g. ['A1']). Omit to update ALL footprints."),
+    },
+    async (args: any) => {
+      const result = await callKicadScript("update_footprints_from_library", args);
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify(result, null, 2),
+          },
+        ],
+      };
+    },
+  );
+
+  // Set layer name tool
+  server.tool(
+    "set_layer_name",
+    "Rename a board layer's display name (SWIG backend; requires KiCad GUI closed). Fixes layer-table corruption, e.g. a silkscreen layer mislabelled with a copper-layer name. Target by numeric layerId (unambiguous when a name is duplicated) or canonical layer name. Empty/omitted name reverts the layer to its default.",
+    {
+      layerId: z
+        .number()
+        .optional()
+        .describe("Numeric layer id (e.g. 5 = F.Silkscreen). Preferred when a custom name is duplicated/ambiguous."),
+      layer: z
+        .string()
+        .optional()
+        .describe("Canonical layer name (e.g. 'F.SilkS') instead of layerId."),
+      name: z
+        .string()
+        .optional()
+        .describe("New display name. Omit or empty to revert to the layer's default name."),
+    },
+    async (args: any) => {
+      const result = await callKicadScript("set_layer_name", args);
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify(result, null, 2),
+          },
+        ],
+      };
+    },
+  );
+
   // Route pad to pad tool
   server.tool(
     "route_pad_to_pad",

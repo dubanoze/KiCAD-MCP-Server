@@ -1158,6 +1158,33 @@ class IPCBoardAPI(BoardAPI):
             logger.error(f"Failed to add text: {e}")
             return False
 
+    def delete_traces(self, net: Optional[str] = None, include_vias: bool = True) -> int:
+        """Remove tracks (and optionally vias) from the live board via kipy.
+
+        net: net name to match; "*" or None matches ALL. include_vias: also remove vias.
+        Returns the number of items removed, or -1 on error. Single transaction (no
+        per-item dehydration), operates on the live KiCAD board.
+        """
+        try:
+            board = self._get_board()
+            want_all = (net is None) or (net == "*")
+            victims = []
+            for t in board.get_tracks():
+                if want_all or (t.net.name if getattr(t, "net", None) else "") == net:
+                    victims.append(t)
+            if include_vias:
+                for v in board.get_vias():
+                    if want_all or (v.net.name if getattr(v, "net", None) else "") == net:
+                        victims.append(v)
+            if victims:
+                board.remove_items(victims)
+                self._notify("traces_deleted", {"count": len(victims), "net": net})
+                logger.info(f"Deleted {len(victims)} tracks/vias (net={net!r})")
+            return len(victims)
+        except Exception as e:
+            logger.error(f"Failed to delete traces: {e}")
+            return -1
+
     def get_tracks(self) -> List[Dict[str, Any]]:
         """Get all tracks on the board."""
         try:
