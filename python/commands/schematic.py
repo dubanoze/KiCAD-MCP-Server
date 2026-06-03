@@ -93,6 +93,17 @@ class SchematicManager:
         try:
             # kicad-skip uses write method, not save
             schematic.write(file_path)
+            # Patch (posture-football-pod, see repo-root PATCHES.md): kicad-skip
+            # serialises the whole .kicad_sch on a single line. Re-indent to
+            # KiCad-canonical multi-line. format_kicad_sch_file is token-preserving
+            # and round-trip-checked, so it can only reformat whitespace — never
+            # alter the design — and is a no-op on any error.
+            try:
+                from commands.sexpr_pretty import format_kicad_sch_file
+
+                format_kicad_sch_file(file_path)
+            except Exception as fmt_err:  # pragma: no cover - formatting is best-effort
+                logger.warning(f"sexpr pretty-print skipped for {file_path}: {fmt_err}")
             logger.info(f"Saved schematic to: {file_path}")
             return True
         except Exception as e:

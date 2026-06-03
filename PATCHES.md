@@ -575,3 +575,148 @@ Fix: prefer the already-loaded `self.board` when it is healthy and its filename 
 requested `boardPath` (resolved), and only fall back to `_safe_load_board` when nothing usable is
 loaded. So the working flow is `open_project` (loads a healthy board) → `sync_schematic_to_board`
 (reuses it, no dehydrating reload). Python-only, effective on reconnect.
+
+---
+
+## 28. `save_schematic` — pretty-print kicad-skip output (token-preserving)
+
+**Added:** 2026-06-03
+**Status:** ✅ local; Python-only, effective on reconnect
+**Files:** `python/commands/sexpr_pretty.py` (new), `python/commands/schematic.py`
+
+### What
+`SchematicManager.save_schematic` now calls `sexpr_pretty.format_kicad_sch_file(path)`
+right after `schematic.write(path)`. The new module re-indents the `.kicad_sch` into
+KiCad-canonical multi-line form.
+
+### Why
+kicad-skip's `Schematic.write()` serialises the entire schematic on a **single line**
+(0 newlines). KiCad reads it fine (whitespace-insensitive) but git diffs become useless
+("5380 deletions / 8 insertions") and it does not match what eeschema produces. This hit
+us swapping U4 TP4054→CN3163 via MCP: every `add_schematic_component` / net-label write
+collapsed `power.kicad_sch` to one line.
+
+The KiCad **IPC API (kipy)** can't help here — it is board-only on write; there is no
+schematic-edit API (hence "IPC mode = pcbnew only"). Schematic edits must go through
+kicad-skip, so the fix is to clean up its serialiser output.
+
+### How (safety)
+`format_kicad_sexpr` tokenises, re-emits pretty, then **re-tokenises and refuses to write
+unless the token tree is byte-for-byte identical** to the input. So it can only change
+whitespace, never a token — worst case it's a no-op. `format_kicad_sch_file` swallows all
+errors so formatting can never break an otherwise-successful save.
+
+### Maintain
+Pure add-on; no upstream conflict expected. If kicad-skip ever gains pretty output,
+this becomes a redundant no-op and can be removed.
+
+---
+
+## 29. Dev hot-reload of command handlers (no reconnect on python edits)
+
+**Added:** 2026-06-03
+**Status:** ✅ local dev affordance; opt-in (off by default)
+**Files:** `python/kicad_interface.py`
+
+### What
+The top-level handler-import block is now wrapped in `_load_command_handlers()`
+(declares all 21 names `global`, then imports). `handle_command` calls
+`_maybe_hot_reload()` first: when enabled it drops every cached `commands.*`
+module from `sys.modules` and re-runs `_load_command_handlers()`, so edits to
+python command files take effect on the **next tool call** — no MCP
+reconnect/restart needed.
+
+### Why
+The MCP server runs a persistent python process; python edits are otherwise
+only picked up on `/mcp` reconnect. With 28+ local patches that iteration loop
+is painful. (kipy can't help — it's board-only; schematic work stays in python.)
+
+### Enable
+Either set env var `KICAD_MCP_HOTRELOAD=1`, **or** create an empty file
+`.kicad_mcp_hotreload` in the server root (easier — no MCP-config edit). Default
+(neither present) = no-op, identical to upstream behaviour.
+
+### Caveats
+Re-imports ~24 small modules per call (negligible at human pace). A syntax error
+in a file being edited makes that call fail until the file is fixed (self-heals
+on the next good edit). Keep OFF for non-dev use.
+
+---
+
+## 30. get_schematic_view_region — PNG converter dependency (pymupdf)
+
+**Added:** 2026-06-03
+**Status:** ✅ local (pymupdf installed into KiCad's python); requirements.txt updated for PR
+
+### What / Why
+`get_schematic_view_region` (region-crop PNG of a schematic — the "close-up vision"
+tool) fails with *"No PNG converter available. Install pymupdf, inkscape, or
+imagemagick"* on a stock install: it does NOT use `cairosvg` (which IS in
+requirements and is used by `get_schematic_view`). KiCad's bundled python had no
+pymupdf → tool unusable.
+
+### Fix
+`pip install pymupdf` into the server's python (KiCad-bundled
+`AppData/Local/Programs/KiCad/10.0/bin/python.exe`); add `pymupdf` to
+requirements.txt.
+
+### PR opportunity
+Make `get_schematic_view_region` fall back to **cairosvg** (already a dependency)
+for SVG→PNG, so it works out-of-the-box without an extra binary. Then this becomes
+a 1-line requirements note instead of a runtime dependency surprise.
+
+---
+
+## 31. New schematic tools: delete_no_connect, delete/edit_schematic_text
+
+**Added:** 2026-06-03
+**Status:** ✅ local; TS+Python, needs `npm run build` + reconnect to expose
+**Files:** `python/commands/wire_manager.py`, `python/kicad_interface.py`, `src/tools/schematic.ts`
+
+### What
+Three new MCP tools to close gaps that previously forced direct-file scripting:
+- **delete_no_connect** — remove a no-connect (X) flag by position or componentRef+pinNumber
+  (mirror of add_no_connect; there was add but no delete).
+- **delete_schematic_text** — remove a free-form text annotation by exact text or position.
+- **edit_schematic_text** — change a text annotation's content in place (position preserved);
+  previously only add_schematic_text / list_schematic_texts existed.
+
+### Why
+Cleaning up the CH585M migration needed: dropping stray NC flags (no delete tool) and
+fixing the sheet title text (no edit/delete tool). Per project rule "no scripts on KiCad
+files — only MCP tools; add the tool if missing".
+
+### Impl
+`WireManager.delete_no_connect / delete_text / edit_text` (sexpdata load → match by
+position/text → mutate → dump). Output is re-prettified by the central save-format hook
+(patch #28). Handlers in kicad_interface.py + dispatch entries; zod schemas in schematic.ts.
+
+---
+
+## 32. New schematic tool: set_schematic_pin_type
+
+**Added:** 2026-06-04
+**Status:** ✅ local; TS+Python, needs `npm run build` + reconnect to expose
+**Files:** `python/commands/wire_manager.py`, `python/kicad_interface.py`, `src/tools/schematic.ts`
+
+### What
+**set_schematic_pin_type** — set one pin's electrical type in a placed symbol's cached
+definition (`lib_symbols`), located by `componentRef` (resolved to lib_id) or `libId`,
+matched by pin number. Valid types: input/output/bidirectional/tri_state/passive/free/
+unspecified/power_in/power_out/open_collector/open_emitter/no_connect.
+
+### Why
+ERC reads pin electrical types from the schematic's `lib_symbols` cache. Two recurring
+needs had no tool and were previously fixed by editing the file directly:
+- EasyEDA/LCSC-imported symbols arrive with all pins `unspecified` → pin_to_pin ERC noise
+  (the CH585M import: 30 warnings, fixed across 49 pins).
+- A DC-DC switch node (CH585M VSW) mistyped `power_in` → power_pin_not_driven; correct
+  type is `passive`.
+Per project rule "no scripts on KiCad files — only MCP tools; add the tool if missing".
+
+### Impl
+`WireManager.set_pin_type` (sexpdata load → resolve lib_id from Reference if needed →
+find `(symbol "<lib_id>" ...)` in `(lib_symbols ...)` → recurse sub-units → match
+`(pin <type> <shape> ... (number "N"))` → rewrite leading type token → dump).
+Re-prettified by the central save hook (patch #28). Handler + dispatch in
+kicad_interface.py; zod enum schema in schematic.ts.

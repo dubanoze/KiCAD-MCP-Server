@@ -27,3 +27,4 @@ requests>=2.32.5
 
 # Environment variable management
 python-dotenv>=1.0.0
+pymupdf>=1.24  # get_schematic_view_region PNG crop converter

@@ -858,6 +858,232 @@ class WireManager:
             return False
 
     @staticmethod
+    def delete_no_connect(
+        schematic_path: Path,
+        position: List[float],
+        tolerance: float = 0.5,
+    ) -> bool:
+        """Delete a no-connect (X) flag whose (at x y) matches position (mm)."""
+        try:
+            with open(schematic_path, "r", encoding="utf-8") as f:
+                sch_data = sexpdata.loads(f.read())
+            px, py = float(position[0]), float(position[1])
+            nc = Symbol("no_connect")
+            for i, item in enumerate(sch_data):
+                if not (isinstance(item, list) and item and item[0] == nc):
+                    continue
+                at = next(
+                    (p for p in item[1:] if isinstance(p, list) and p and p[0] == _SYM_AT),
+                    None,
+                )
+                if at is None:
+                    continue
+                if abs(float(at[1]) - px) < tolerance and abs(float(at[2]) - py) < tolerance:
+                    del sch_data[i]
+                    with open(schematic_path, "w", encoding="utf-8") as f:
+                        f.write(sexpdata.dumps(sch_data))
+                    logger.info(f"Deleted no-connect at {position}")
+                    return True
+            logger.warning(f"No matching no-connect at {position}")
+            return False
+        except Exception as e:
+            logger.error(f"Error deleting no-connect: {e}")
+            return False
+
+    @staticmethod
+    def _find_text_index(sch_data, position=None, text=None, tolerance=0.5) -> int:
+        """Index of a (text "...") element matched by exact text or (at) position."""
+        tsym = Symbol("text")
+        for i, item in enumerate(sch_data):
+            if not (isinstance(item, list) and len(item) >= 2 and item[0] == tsym):
+                continue
+            if text is not None and str(item[1]) == text:
+                return i
+            if position is not None:
+                at = next(
+                    (p for p in item[2:] if isinstance(p, list) and p and p[0] == _SYM_AT),
+                    None,
+                )
+                if (
+                    at is not None
+                    and abs(float(at[1]) - position[0]) < tolerance
+                    and abs(float(at[2]) - position[1]) < tolerance
+                ):
+                    return i
+        return -1
+
+    @staticmethod
+    def delete_text(
+        schematic_path: Path,
+        position: Optional[List[float]] = None,
+        text: Optional[str] = None,
+        tolerance: float = 0.5,
+    ) -> bool:
+        """Delete a free-form (text "...") annotation by exact text or by position."""
+        try:
+            with open(schematic_path, "r", encoding="utf-8") as f:
+                sch_data = sexpdata.loads(f.read())
+            idx = WireManager._find_text_index(sch_data, position, text, tolerance)
+            if idx < 0:
+                logger.warning(f"No matching text (pos={position}, text={text})")
+                return False
+            del sch_data[idx]
+            with open(schematic_path, "w", encoding="utf-8") as f:
+                f.write(sexpdata.dumps(sch_data))
+            logger.info("Deleted schematic text")
+            return True
+        except Exception as e:
+            logger.error(f"Error deleting text: {e}")
+            return False
+
+    @staticmethod
+    def edit_text(
+        schematic_path: Path,
+        new_text: str,
+        position: Optional[List[float]] = None,
+        old_text: Optional[str] = None,
+        tolerance: float = 0.5,
+    ) -> bool:
+        """Replace the string of a (text "...") annotation (located by old_text or position)."""
+        try:
+            with open(schematic_path, "r", encoding="utf-8") as f:
+                sch_data = sexpdata.loads(f.read())
+            idx = WireManager._find_text_index(sch_data, position, old_text, tolerance)
+            if idx < 0:
+                logger.warning(f"No matching text to edit (pos={position}, old={old_text})")
+                return False
+            sch_data[idx][1] = new_text
+            with open(schematic_path, "w", encoding="utf-8") as f:
+                f.write(sexpdata.dumps(sch_data))
+            logger.info("Edited schematic text")
+            return True
+        except Exception as e:
+            logger.error(f"Error editing text: {e}")
+            return False
+
+    # Electrical pin types accepted by KiCad's (pin <type> <shape> ...) field.
+    _PIN_TYPES = {
+        "input", "output", "bidirectional", "tri_state", "passive", "free",
+        "unspecified", "power_in", "power_out", "open_collector",
+        "open_emitter", "no_connect",
+    }
+
+    @staticmethod
+    def _lib_id_for_ref(sch_data, component_ref: str) -> Optional[str]:
+        """Resolve a placed symbol's lib_id string from its Reference property."""
+        sym = Symbol("symbol")
+        lib_id_s = Symbol("lib_id")
+        prop = Symbol("property")
+        for item in sch_data:
+            if not (isinstance(item, list) and item and item[0] == sym):
+                continue
+            ref = None
+            lib_id = None
+            for p in item[1:]:
+                if not (isinstance(p, list) and p):
+                    continue
+                if p[0] == lib_id_s and len(p) >= 2:
+                    lib_id = str(p[1])
+                elif p[0] == prop and len(p) >= 3 and str(p[1]) == "Reference":
+                    ref = str(p[2])
+            if ref == component_ref:
+                return lib_id
+        return None
+
+    @staticmethod
+    def set_pin_type(
+        schematic_path: Path,
+        pin_number: str,
+        pin_type: str,
+        component_ref: Optional[str] = None,
+        lib_id: Optional[str] = None,
+    ) -> bool:
+        """Set the electrical type of one pin in a symbol's (lib_symbols ...) definition.
+
+        ERC reads pin electrical types from the schematic's cached symbol definition,
+        so patching it here is what clears pin_to_pin / power_pin_not_driven noise.
+        Locate the symbol by component_ref (resolved to its lib_id) or lib_id directly;
+        match the pin by its (number "N"); rewrite the leading type token.
+        """
+        try:
+            pin_type = str(pin_type)
+            if pin_type not in WireManager._PIN_TYPES:
+                logger.error(
+                    f"Invalid pin type '{pin_type}'; expected one of {sorted(WireManager._PIN_TYPES)}"
+                )
+                return False
+            with open(schematic_path, "r", encoding="utf-8") as f:
+                sch_data = sexpdata.loads(f.read())
+
+            target = lib_id
+            if target is None and component_ref is not None:
+                target = WireManager._lib_id_for_ref(sch_data, component_ref)
+            if target is None:
+                logger.error(
+                    f"Could not resolve lib_id (ref={component_ref}, lib_id={lib_id})"
+                )
+                return False
+
+            sym = Symbol("symbol")
+            lib_symbols_s = Symbol("lib_symbols")
+            pin_s = Symbol("pin")
+            number_s = Symbol("number")
+            want = str(pin_number)
+
+            lib_symbols = next(
+                (it for it in sch_data
+                 if isinstance(it, list) and it and it[0] == lib_symbols_s),
+                None,
+            )
+            if lib_symbols is None:
+                logger.error("No (lib_symbols ...) block in schematic")
+                return False
+
+            sym_def = next(
+                (it for it in lib_symbols[1:]
+                 if isinstance(it, list) and len(it) >= 2
+                 and it[0] == sym and str(it[1]) == target),
+                None,
+            )
+            if sym_def is None:
+                logger.error(f"Symbol definition '{target}' not found in lib_symbols")
+                return False
+
+            # Pins live in the per-unit sub-(symbol ...) children of the top definition.
+            def _patch_pins(node) -> bool:
+                changed = False
+                for child in node:
+                    if not (isinstance(child, list) and child):
+                        continue
+                    if child[0] == sym:
+                        if _patch_pins(child):
+                            changed = True
+                    elif child[0] == pin_s and len(child) >= 3:
+                        num = next(
+                            (p for p in child[2:]
+                             if isinstance(p, list) and p and p[0] == number_s),
+                            None,
+                        )
+                        if num is not None and str(num[1]) == want:
+                            child[1] = Symbol(pin_type)
+                            changed = True
+                return changed
+
+            if not _patch_pins(sym_def):
+                logger.warning(f"Pin {want} not found in symbol '{target}'")
+                return False
+
+            with open(schematic_path, "w", encoding="utf-8") as f:
+                f.write(sexpdata.dumps(sch_data))
+            logger.info(f"Set pin {want} of '{target}' to type '{pin_type}'")
+            return True
+        except Exception as e:
+            logger.error(f"Error setting pin type: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return False
+
+    @staticmethod
     def delete_label(
         schematic_path: Path,
         net_name: str,

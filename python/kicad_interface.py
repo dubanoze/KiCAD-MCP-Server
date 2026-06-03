@@ -303,8 +303,20 @@ elif KICAD_BACKEND == "ipc" and not USE_IPC_BACKEND:
     sys.exit(1)
 
 # Import command handlers
-try:
-    logger.info("Importing command handlers...")
+def _load_command_handlers():
+    """Import every command-handler class into this module's globals.
+
+    Wrapped in a function (instead of a bare top-level import block) so the dev
+    hot-reload path (_maybe_hot_reload) can re-run it after dropping cached
+    commands.* modules — letting python edits take effect without a full MCP
+    server restart/reconnect. See repo-root PATCHES.md."""
+    global BoardCommands, ComponentCommands, ComponentManager, ConnectionManager
+    global DatasheetManager, DesignRuleCommands, ExportCommands, FootprintCreator
+    global FreeroutingCommands, JLCPCBClient, test_jlcpcb_connection, JLCPCBPartsManager
+    global LibraryCommands, FootprintLibraryManager, SchematicLibraryManager
+    global SymbolLibraryCommands, SymbolLibraryManager, ProjectCommands
+    global RoutingCommands, SchematicManager, SymbolCreator
+
     from commands.board import BoardCommands
     from commands.component import ComponentCommands
     from commands.component_schematic import ComponentManager
@@ -316,9 +328,7 @@ try:
     from commands.freerouting import FreeroutingCommands
     from commands.jlcpcb import JLCPCBClient, test_jlcpcb_connection
     from commands.jlcpcb_parts import JLCPCBPartsManager
-    from commands.library import (
-        LibraryCommands,
-    )
+    from commands.library import LibraryCommands
     from commands.library import LibraryManager as FootprintLibraryManager
     from commands.library_schematic import LibraryManager as SchematicLibraryManager
     from commands.library_symbol import SymbolLibraryCommands, SymbolLibraryManager
@@ -327,6 +337,40 @@ try:
     from commands.schematic import SchematicManager
     from commands.symbol_creator import SymbolCreator
 
+
+def _maybe_hot_reload():
+    """Dev affordance: when env var KICAD_MCP_HOTRELOAD is set, drop all cached
+    commands.* modules and re-import the handlers so edits to python command
+    files take effect on the next tool call — no MCP reconnect needed.
+
+    Enabled by either the env var KICAD_MCP_HOTRELOAD or a sentinel file
+    ``.kicad_mcp_hotreload`` in the server root (the file is easier to toggle —
+    no MCP-config edit needed). Disabled (no-op) by default, so production
+    behaviour is unchanged."""
+    enabled = bool(os.environ.get("KICAD_MCP_HOTRELOAD"))
+    if not enabled:
+        try:
+            sentinel = os.path.join(
+                os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                ".kicad_mcp_hotreload",
+            )
+            enabled = os.path.exists(sentinel)
+        except Exception:
+            enabled = False
+    if not enabled:
+        return
+    try:
+        for _name in [m for m in list(sys.modules) if m == "commands" or m.startswith("commands.")]:
+            del sys.modules[_name]
+        _load_command_handlers()
+        logger.info("Hot-reloaded command handlers (KICAD_MCP_HOTRELOAD)")
+    except Exception as e:  # pragma: no cover - best effort dev tool
+        logger.warning(f"Hot-reload skipped: {e}")
+
+
+try:
+    logger.info("Importing command handlers...")
+    _load_command_handlers()
     logger.info("Successfully imported all command handlers")
 except ImportError as e:
     logger.error(f"Failed to import command handlers: {e}")
@@ -587,6 +631,10 @@ class KiCADInterface:
             "delete_schematic_wire": self._handle_delete_schematic_wire,
             "delete_schematic_net_label": self._handle_delete_schematic_net_label,
             "move_schematic_net_label": self._handle_move_schematic_net_label,
+            "delete_no_connect": self._handle_delete_no_connect,
+            "delete_schematic_text": self._handle_delete_schematic_text,
+            "edit_schematic_text": self._handle_edit_schematic_text,
+            "set_schematic_pin_type": self._handle_set_schematic_pin_type,
             "export_schematic_pdf": self._handle_export_schematic_pdf,
             "export_schematic_svg": self._handle_export_schematic_svg,
             # Schematic analysis tools (read-only)
@@ -847,9 +895,29 @@ class KiCADInterface:
         return "swig"
 
     def handle_command(self, command: str, params: Dict[str, Any]) -> Dict[str, Any]:
+        """Dispatch a command, then normalise the formatting of any .kicad_sch it wrote.
+
+        kicad-skip / sexpdata write paths emit single-line schematics through
+        several handlers (save_schematic, WireManager, schematic_snap, ...). This
+        one central post-hook re-indents the touched schematic to KiCad-canonical
+        multi-line form. format_kicad_sch_file is token-preserving and a no-op on
+        error or on an already-pretty file (see repo-root PATCHES.md)."""
+        result = self._dispatch_command(command, params)
+        try:
+            sp = params.get("schematicPath")
+            if isinstance(sp, str) and sp.endswith(".kicad_sch") and os.path.exists(sp):
+                from commands.sexpr_pretty import format_kicad_sch_file
+
+                format_kicad_sch_file(sp)
+        except Exception as e:  # pragma: no cover - formatting is best-effort
+            logger.warning(f"schematic post-format skipped: {e}")
+        return result
+
+    def _dispatch_command(self, command: str, params: Dict[str, Any]) -> Dict[str, Any]:
         """Route command to appropriate handler, preferring IPC when available"""
         logger.info(f"Handling command: {command}")
         logger.debug(f"Command parameters: {params}")
+        _maybe_hot_reload()  # dev: re-import command modules if KICAD_MCP_HOTRELOAD set
 
         try:
             if command in self.IPC_CAPABLE_COMMANDS:
@@ -3302,6 +3370,155 @@ class KiCADInterface:
                 "message": str(e),
                 "errorDetails": traceback.format_exc(),
             }
+
+    def _handle_delete_no_connect(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """Delete a no-connect (X) flag by position or by componentRef+pinNumber."""
+        try:
+            from pathlib import Path
+
+            from commands.pin_locator import PinLocator
+            from commands.wire_manager import WireManager
+
+            schematic_path = params.get("schematicPath")
+            position = params.get("position")
+            component_ref = params.get("componentRef")
+            pin_number = params.get("pinNumber")
+            if not schematic_path:
+                return {"success": False, "message": "schematicPath is required"}
+            if isinstance(position, dict):
+                position = [position.get("x"), position.get("y")]
+            if component_ref and pin_number is not None:
+                loc = PinLocator().get_pin_location(
+                    Path(schematic_path), component_ref, str(pin_number)
+                )
+                if loc is None:
+                    return {
+                        "success": False,
+                        "message": f"Could not locate pin {pin_number} on {component_ref}",
+                    }
+                position = loc
+            if not position:
+                return {
+                    "success": False,
+                    "message": "Provide position [x, y] or componentRef + pinNumber",
+                }
+            ok = WireManager.delete_no_connect(Path(schematic_path), position)
+            return {
+                "success": ok,
+                "message": (
+                    f"Deleted no-connect at {position}"
+                    if ok
+                    else "No matching no-connect flag found"
+                ),
+            }
+        except Exception as e:
+            import traceback
+
+            logger.error(f"Error deleting no-connect: {e}")
+            return {"success": False, "message": str(e), "errorDetails": traceback.format_exc()}
+
+    def _handle_delete_schematic_text(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """Delete a free-form text annotation by exact text or by position."""
+        try:
+            from pathlib import Path
+
+            from commands.wire_manager import WireManager
+
+            schematic_path = params.get("schematicPath")
+            text = params.get("text")
+            position = params.get("position")
+            if not schematic_path:
+                return {"success": False, "message": "schematicPath is required"}
+            if isinstance(position, dict):
+                position = [position.get("x"), position.get("y")]
+            if text is None and not position:
+                return {"success": False, "message": "Provide text or position [x, y]"}
+            ok = WireManager.delete_text(Path(schematic_path), position=position, text=text)
+            return {
+                "success": ok,
+                "message": ("Deleted schematic text" if ok else "No matching text found"),
+            }
+        except Exception as e:
+            import traceback
+
+            logger.error(f"Error deleting text: {e}")
+            return {"success": False, "message": str(e), "errorDetails": traceback.format_exc()}
+
+    def _handle_edit_schematic_text(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """Replace the string of a text annotation, located by oldText or position."""
+        try:
+            from pathlib import Path
+
+            from commands.wire_manager import WireManager
+
+            schematic_path = params.get("schematicPath")
+            new_text = params.get("newText")
+            old_text = params.get("oldText")
+            position = params.get("position")
+            if not schematic_path or new_text is None:
+                return {"success": False, "message": "schematicPath and newText are required"}
+            if isinstance(position, dict):
+                position = [position.get("x"), position.get("y")]
+            if old_text is None and not position:
+                return {"success": False, "message": "Provide oldText or position [x, y]"}
+            ok = WireManager.edit_text(
+                Path(schematic_path), new_text, position=position, old_text=old_text
+            )
+            return {
+                "success": ok,
+                "message": (f"Updated text to '{new_text}'" if ok else "No matching text found"),
+            }
+        except Exception as e:
+            import traceback
+
+            logger.error(f"Error editing text: {e}")
+            return {"success": False, "message": str(e), "errorDetails": traceback.format_exc()}
+
+    def _handle_set_schematic_pin_type(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """Set the electrical type of one pin in a symbol's cached definition.
+
+        ERC reads pin electrical types from the schematic's (lib_symbols ...) cache,
+        so this is what clears pin_to_pin / power_pin_not_driven noise without
+        round-tripping through eeschema. Locate the symbol by componentRef (resolved
+        to its lib_id) or libId; match the pin by its number; rewrite the type token.
+        """
+        try:
+            from pathlib import Path
+
+            from commands.wire_manager import WireManager
+
+            schematic_path = params.get("schematicPath")
+            pin_number = params.get("pinNumber")
+            pin_type = params.get("pinType")
+            component_ref = params.get("componentRef")
+            lib_id = params.get("libId")
+            if not schematic_path or pin_number is None or not pin_type:
+                return {
+                    "success": False,
+                    "message": "schematicPath, pinNumber and pinType are required",
+                }
+            if not component_ref and not lib_id:
+                return {"success": False, "message": "Provide componentRef or libId"}
+            ok = WireManager.set_pin_type(
+                Path(schematic_path),
+                str(pin_number),
+                str(pin_type),
+                component_ref=component_ref,
+                lib_id=lib_id,
+            )
+            return {
+                "success": ok,
+                "message": (
+                    f"Set pin {pin_number} to '{pin_type}'"
+                    if ok
+                    else "Pin/symbol not found or invalid pin type"
+                ),
+            }
+        except Exception as e:
+            import traceback
+
+            logger.error(f"Error setting pin type: {e}")
+            return {"success": False, "message": str(e), "errorDetails": traceback.format_exc()}
 
     def _handle_connect_to_net(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """Connect a component pin to a named net using wire stub and label,

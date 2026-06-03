@@ -1238,6 +1238,164 @@ edit_schematic_component and set its value to an empty string.`,
     },
   );
 
+  // Delete a no-connect (X) flag from schematic
+  server.tool(
+    "delete_no_connect",
+    "Remove a no-connect (X) flag from the schematic, located by position (mm) or by " +
+      "componentRef + pinNumber (snaps to the pin endpoint). Mirror of add_no_connect.",
+    {
+      schematicPath: z.string().describe("Path to the .kicad_sch file"),
+      position: z
+        .object({ x: z.number(), y: z.number() })
+        .optional()
+        .describe("Position of the no-connect flag in mm"),
+      componentRef: z.string().optional().describe("Component reference to snap to (with pinNumber)"),
+      pinNumber: z
+        .union([z.string(), z.number()])
+        .optional()
+        .describe("Pin number or name on componentRef"),
+    },
+    async (args: {
+      schematicPath: string;
+      position?: { x: number; y: number };
+      componentRef?: string;
+      pinNumber?: string | number;
+    }) => {
+      const result = await callKicadScript("delete_no_connect", args);
+      return {
+        content: [
+          {
+            type: "text",
+            text: result.message || (result.success ? "Deleted no-connect" : "Failed"),
+          },
+        ],
+        isError: !result.success,
+      };
+    },
+  );
+
+  // Delete a free-form text annotation
+  server.tool(
+    "delete_schematic_text",
+    "Remove a free-form text annotation from the schematic, matched by exact text content " +
+      "or by position (mm).",
+    {
+      schematicPath: z.string().describe("Path to the .kicad_sch file"),
+      text: z.string().optional().describe("Exact text content to match"),
+      position: z
+        .object({ x: z.number(), y: z.number() })
+        .optional()
+        .describe("Text anchor position in mm"),
+    },
+    async (args: {
+      schematicPath: string;
+      text?: string;
+      position?: { x: number; y: number };
+    }) => {
+      const result = await callKicadScript("delete_schematic_text", args);
+      return {
+        content: [
+          {
+            type: "text",
+            text: result.message || (result.success ? "Deleted text" : "Failed"),
+          },
+        ],
+        isError: !result.success,
+      };
+    },
+  );
+
+  // Edit a free-form text annotation in place
+  server.tool(
+    "edit_schematic_text",
+    "Change the content of an existing free-form text annotation in place (position preserved), " +
+      "located by its current text (oldText) or by position (mm). Use add_schematic_text to create new text.",
+    {
+      schematicPath: z.string().describe("Path to the .kicad_sch file"),
+      newText: z.string().describe("New text content"),
+      oldText: z.string().optional().describe("Current text content used to locate the annotation"),
+      position: z
+        .object({ x: z.number(), y: z.number() })
+        .optional()
+        .describe("Text anchor position in mm (alternative to oldText)"),
+    },
+    async (args: {
+      schematicPath: string;
+      newText: string;
+      oldText?: string;
+      position?: { x: number; y: number };
+    }) => {
+      const result = await callKicadScript("edit_schematic_text", args);
+      return {
+        content: [
+          {
+            type: "text",
+            text: result.message || (result.success ? "Updated text" : "Failed"),
+          },
+        ],
+        isError: !result.success,
+      };
+    },
+  );
+
+  // Set a pin's electrical type in the symbol's cached definition
+  server.tool(
+    "set_schematic_pin_type",
+    "Set the electrical type of one pin in a placed symbol's cached definition (lib_symbols). " +
+      "ERC reads pin types from this cache, so this clears pin_to_pin / power_pin_not_driven noise " +
+      "(e.g. an imported EasyEDA symbol whose pins are all 'unspecified', or a DC-DC switch node " +
+      "mistyped 'power_in' that should be 'passive'). Identify the symbol by componentRef (resolved " +
+      "to its lib_id) or libId; identify the pin by its pin number. " +
+      "Valid types: input, output, bidirectional, tri_state, passive, free, unspecified, power_in, " +
+      "power_out, open_collector, open_emitter, no_connect.",
+    {
+      schematicPath: z.string().describe("Path to the .kicad_sch file"),
+      pinNumber: z.string().describe("Pin number to retype (e.g. '2')"),
+      pinType: z
+        .enum([
+          "input",
+          "output",
+          "bidirectional",
+          "tri_state",
+          "passive",
+          "free",
+          "unspecified",
+          "power_in",
+          "power_out",
+          "open_collector",
+          "open_emitter",
+          "no_connect",
+        ])
+        .describe("New electrical pin type"),
+      componentRef: z
+        .string()
+        .optional()
+        .describe("Reference of a placed instance (e.g. 'U1') to resolve the symbol's lib_id"),
+      libId: z
+        .string()
+        .optional()
+        .describe("Symbol lib_id directly (e.g. 'JLC-MCP-MCUs:CH585M_C42381469'); alternative to componentRef"),
+    },
+    async (args: {
+      schematicPath: string;
+      pinNumber: string;
+      pinType: string;
+      componentRef?: string;
+      libId?: string;
+    }) => {
+      const result = await callKicadScript("set_schematic_pin_type", args);
+      return {
+        content: [
+          {
+            type: "text",
+            text: result.message || (result.success ? "Pin type updated" : "Failed"),
+          },
+        ],
+        isError: !result.success,
+      };
+    },
+  );
+
   // Delete net label from schematic
   server.tool(
     "delete_schematic_net_label",

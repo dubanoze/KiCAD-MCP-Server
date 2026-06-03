@@ -97,3 +97,6 @@ CLAUDE.md
 
 inspect-tools.mjs
 resources/images/icon_b64.txt
+
+# Local hot-reload sentinel (per-machine opt-in, see PATCHES.md)
+.kicad_mcp_hotreload
