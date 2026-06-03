@@ -521,7 +521,7 @@ class KiCADInterface:
             "set_pad_zone_connection": self._handle_set_pad_zone_connection,
             "set_grid": self._handle_set_grid_no_gui,
             # Design rule commands
-            "set_design_rules": self.design_rule_commands.set_design_rules,
+            "set_design_rules": self._handle_set_design_rules,
             "get_design_rules": self.design_rule_commands.get_design_rules,
             "run_drc": self.design_rule_commands.run_drc,
             "get_drc_violations": self.design_rule_commands.get_drc_violations,
@@ -1202,6 +1202,60 @@ class KiCADInterface:
                          "priority": new_cls["priority"]},
             "nets": nets,
         }
+
+    def _handle_set_design_rules(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """Apply design-rule constraints to the live board AND persist them.
+
+        The min_* constraints live in the project's board.design_settings.rules
+        (.kicad_pro), not the board, so the SWIG board mutation never reaches disk
+        (same gap as net classes). Run the SWIG handler for the live board, then
+        write the constraints straight into the .kicad_pro JSON.
+        """
+        import json as _json
+
+        result = self.design_rule_commands.set_design_rules(params)
+        if not isinstance(result, dict):
+            result = {"success": True}
+
+        board_path = self._current_board_path()
+        pro_path = self._current_project_file_path(board_path)
+        if not pro_path:
+            hint = params.get("projectPath") or params.get("boardPath")
+            if hint:
+                hint = str(hint)
+                pro_path = hint if hint.endswith(".kicad_pro") else \
+                    (hint[:-len(".kicad_pcb")] + ".kicad_pro" if hint.endswith(".kicad_pcb") else None)
+
+        keymap = {
+            "clearance": "min_clearance",
+            "minTrackWidth": "min_track_width",
+            "minViaDiameter": "min_via_diameter",
+            "minViaDrill": "min_through_hole_diameter",
+            "minHoleDiameter": "min_through_hole_diameter",
+            "minMicroViaDiameter": "min_microvia_diameter",
+            "minMicroViaDrill": "min_microvia_drill",
+        }
+        if pro_path and os.path.exists(pro_path):
+            try:
+                with open(pro_path, "r", encoding="utf-8") as f:
+                    data = _json.load(f)
+                rules = data.setdefault("board", {}).setdefault("design_settings", {}).setdefault("rules", {})
+                written = {}
+                for p, k in keymap.items():
+                    v = params.get(p)
+                    if v is not None:
+                        rules[k] = v
+                        written[k] = v
+                with open(pro_path, "w", encoding="utf-8") as f:
+                    _json.dump(data, f, indent=2)
+                    f.write("\n")
+                result["persistedToProject"] = written
+                result["projectPath"] = pro_path
+            except Exception as e:
+                result["persistError"] = str(e)
+        else:
+            result["persistError"] = "Could not locate .kicad_pro (open the project first)"
+        return result
 
     def _dirty_state(self, board_path: Optional[str]) -> Dict[str, Any]:
         """Return the best-known dirty state for the loaded board.

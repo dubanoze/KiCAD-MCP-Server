@@ -496,3 +496,22 @@ Project path comes from `_current_project_file_path()` (or an explicit `projectP
 0.8 mm stack) assigned to ANT_RF/ANT_FEED/FL_IN/FL_OUT, and no working tool could create+assign
 one. Reuses the existing `add_net_class` TS schema (no TS change); Python-only, effective on
 backend reconnect. Verified: writes `RF` (track 0.34, priority 0) + 4 patterns, valid `.kicad_pro`.
+
+---
+
+## 24. `set_design_rules` — persist min-* constraints to `.kicad_pro`
+
+**Added:** 2026-06-03 · `python/kicad_interface.py` (`_handle_set_design_rules` wraps
+`design_rule_commands.set_design_rules`; dispatch entry repointed)
+
+Same persistence gap as #23: the design-rule constraints (`min_clearance`, `min_track_width`,
+`min_via_diameter`, `min_through_hole_diameter`, `min_microvia_*`) live in the project's
+`board.design_settings.rules` (`.kicad_pro`), so the SWIG board mutation in `set_design_rules`
+updated the in-memory board but never reached disk — re-reading `.kicad_pro` still showed
+`min_clearance: 0.0`. The wrapper runs the original SWIG handler (for the live board), then writes
+the constraints straight into `.kicad_pro` via `_current_project_file_path()`, mapping the tool's
+camelCase params to KiCad's snake_case rule keys.
+
+**Why:** the board shipped with `min_clearance = 0` (DRC could not catch shorts). Setting JLCPCB
+values (clearance/track 0.127, via 0.45/0.2, hole 0.2) via the existing tool now actually persists.
+Python-only, effective on reconnect.
