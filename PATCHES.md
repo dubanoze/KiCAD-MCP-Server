@@ -858,3 +858,29 @@ rule "no scripts on KiCad files — only MCP tools; add the tool if missing".
 ### Impl
 `WireManager.add_rectangle` appends `(rectangle (start)(end)(stroke)(fill)(uuid))` before
 `(sheet_instances)`. Re-prettified by the central save hook (#28).
+
+---
+
+## 37. New schematic tools: add_schematic_polyline, delete_schematic_shape
+
+**Added:** 2026-06-04
+**Status:** ✅ local; TS+Python, needs `npm run build` + reconnect to expose
+**Files:** `python/commands/wire_manager.py`, `python/kicad_interface.py`, `src/tools/schematic.ts`
+
+### What
+- **add_schematic_polyline** — add a graphic `(polyline (pts ...))` (block-diagram connection
+  line; not electrical — use add_schematic_wire for nets).
+- **delete_schematic_shape** — delete a graphic shape (rectangle/polyline/circle/arc) matched
+  by a reference point (any defining coord — start/end/center or a pts vertex — within tolerance).
+
+### Why
+Finishing the block-diagram LDO box (#36): to match the other outline-only blocks instead of
+a background-filled box, the VBAT polyline had to be split so it doesn't run under the box —
+which needs deleting the old line and routing two new segments. No tools existed for graphic
+polylines or for deleting graphic shapes. Per the project rule "no scripts on KiCad files —
+only MCP tools; add the tool if missing".
+
+### Impl
+`WireManager.add_polyline` appends a `(polyline)` before `(sheet_instances)`;
+`WireManager.delete_shape` finds the first matching shape by type + reference coordinate and
+removes it. Re-prettified by the central save hook (#28).

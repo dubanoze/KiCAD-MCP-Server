@@ -400,6 +400,90 @@ class WireManager:
             return False
 
     @staticmethod
+    def add_polyline(
+        schematic_path: Path,
+        points: List[List[float]],
+        stroke_width: float = 0.4,
+    ) -> bool:
+        """Add a graphic polyline (block-diagram connection line) through points (mm)."""
+        try:
+            with open(schematic_path, "r", encoding="utf-8") as f:
+                sch_data = sexpdata.loads(f.read())
+
+            pts = [Symbol("pts")] + [
+                [Symbol("xy"), float(p[0]), float(p[1])] for p in points
+            ]
+            poly_sexp = [
+                Symbol("polyline"),
+                pts,
+                [Symbol("stroke"), [Symbol("width"), stroke_width], [Symbol("type"), Symbol("default")]],
+                [Symbol("uuid"), str(uuid.uuid4())],
+            ]
+            insert_at = len(sch_data)
+            for i, item in enumerate(sch_data):
+                if isinstance(item, list) and item and item[0] == _SYM_SHEET_INSTANCES:
+                    insert_at = i
+                    break
+            sch_data.insert(insert_at, poly_sexp)
+
+            with open(schematic_path, "w", encoding="utf-8") as f:
+                f.write(sexpdata.dumps(sch_data))
+            logger.info(f"Added polyline {points} to {schematic_path.name}")
+            return True
+        except Exception as e:
+            logger.error(f"Error adding polyline: {e}")
+            import traceback
+
+            logger.error(traceback.format_exc())
+            return False
+
+    @staticmethod
+    def delete_shape(
+        schematic_path: Path,
+        shape_type: str,
+        point: List[float],
+        tolerance: float = 0.5,
+    ) -> bool:
+        """Delete a graphic shape (rectangle/polyline/circle/arc) by a reference point.
+
+        Matches the first shape of the given type that has any defining coordinate
+        (start/end/center/mid or a pts vertex) within tolerance of `point`.
+        """
+        try:
+            with open(schematic_path, "r", encoding="utf-8") as f:
+                sch_data = sexpdata.loads(f.read())
+            sym = Symbol(str(shape_type))
+            px, py = float(point[0]), float(point[1])
+            for i, item in enumerate(sch_data):
+                if not (isinstance(item, list) and item and item[0] == sym):
+                    continue
+                coords = []
+                for e in item[1:]:
+                    if not (isinstance(e, list) and e):
+                        continue
+                    h = str(e[0])
+                    if h in ("start", "end", "center", "mid", "at") and len(e) >= 3:
+                        coords.append((float(e[1]), float(e[2])))
+                    elif h == "pts":
+                        for xy in e[1:]:
+                            if isinstance(xy, list) and xy and str(xy[0]) == "xy":
+                                coords.append((float(xy[1]), float(xy[2])))
+                if any(abs(x - px) < tolerance and abs(y - py) < tolerance for x, y in coords):
+                    del sch_data[i]
+                    with open(schematic_path, "w", encoding="utf-8") as f:
+                        f.write(sexpdata.dumps(sch_data))
+                    logger.info(f"Deleted {shape_type} near {point}")
+                    return True
+            logger.warning(f"No {shape_type} found near {point}")
+            return False
+        except Exception as e:
+            logger.error(f"Error deleting shape: {e}")
+            import traceback
+
+            logger.error(traceback.format_exc())
+            return False
+
+    @staticmethod
     def _parse_wire(
         wire_item: Any,
     ) -> Optional[Tuple[Tuple[float, float], Tuple[float, float], float, str]]:

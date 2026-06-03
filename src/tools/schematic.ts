@@ -1437,6 +1437,69 @@ edit_schematic_component and set its value to an empty string.`,
     },
   );
 
+  // Add a graphic polyline (block-diagram connection line)
+  server.tool(
+    "add_schematic_polyline",
+    "Add a graphic polyline (open path) to the schematic — e.g. a connection line in a " +
+      "hand-drawn block diagram. Points are graphic vertices in mm (not electrical). For a " +
+      "real net connection use add_schematic_wire instead.",
+    {
+      schematicPath: z.string().describe("Path to the .kicad_sch file"),
+      points: z
+        .array(z.object({ x: z.number(), y: z.number() }))
+        .min(2)
+        .describe("Ordered vertices in mm (>=2)"),
+      strokeWidth: z.number().optional().describe("Line width in mm (default 0.4)"),
+    },
+    async (args: {
+      schematicPath: string;
+      points: { x: number; y: number }[];
+      strokeWidth?: number;
+    }) => {
+      const result = await callKicadScript("add_schematic_polyline", args);
+      return {
+        content: [
+          { type: "text", text: result.message || (result.success ? "Polyline added" : "Failed") },
+        ],
+        isError: !result.success,
+      };
+    },
+  );
+
+  // Delete a graphic shape (rectangle/polyline/circle/arc) by reference point
+  server.tool(
+    "delete_schematic_shape",
+    "Delete a graphic shape (rectangle, polyline, circle, or arc) from the schematic, matched " +
+      "by a reference point — the first shape of that type with a defining coordinate " +
+      "(start/end/center or a polyline vertex) within tolerance of the point. Use to edit a " +
+      "block diagram (e.g. remove a line before re-routing it). Net labels/wires have their " +
+      "own delete tools.",
+    {
+      schematicPath: z.string().describe("Path to the .kicad_sch file"),
+      shapeType: z
+        .enum(["rectangle", "polyline", "circle", "arc"])
+        .describe("Graphic shape type to delete"),
+      point: z
+        .object({ x: z.number(), y: z.number() })
+        .describe("Reference point in mm (a vertex/corner/center of the shape)"),
+      tolerance: z.number().optional().describe("Match tolerance in mm (default 0.5)"),
+    },
+    async (args: {
+      schematicPath: string;
+      shapeType: string;
+      point: { x: number; y: number };
+      tolerance?: number;
+    }) => {
+      const result = await callKicadScript("delete_schematic_shape", args);
+      return {
+        content: [
+          { type: "text", text: result.message || (result.success ? "Shape deleted" : "Failed") },
+        ],
+        isError: !result.success,
+      };
+    },
+  );
+
   // Set a net label's rotation / justify without moving it
   server.tool(
     "set_schematic_label_orientation",

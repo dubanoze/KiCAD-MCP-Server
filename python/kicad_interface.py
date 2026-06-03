@@ -638,6 +638,8 @@ class KiCADInterface:
             "update_schematic_symbols_from_library": self._handle_update_schematic_symbols_from_library,
             "set_schematic_label_orientation": self._handle_set_schematic_label_orientation,
             "add_schematic_rectangle": self._handle_add_schematic_rectangle,
+            "add_schematic_polyline": self._handle_add_schematic_polyline,
+            "delete_schematic_shape": self._handle_delete_schematic_shape,
             "export_schematic_pdf": self._handle_export_schematic_pdf,
             "export_schematic_svg": self._handle_export_schematic_svg,
             # Schematic analysis tools (read-only)
@@ -3554,6 +3556,58 @@ class KiCADInterface:
             import traceback
 
             logger.error(f"Error adding rectangle: {e}")
+            return {"success": False, "message": str(e), "errorDetails": traceback.format_exc()}
+
+    def _handle_add_schematic_polyline(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """Add a graphic polyline (block-diagram connection line) to the schematic."""
+        try:
+            from pathlib import Path
+
+            from commands.wire_manager import WireManager
+
+            schematic_path = params.get("schematicPath")
+            points = params.get("points")
+            if not schematic_path or not points or len(points) < 2:
+                return {"success": False, "message": "schematicPath and >=2 points are required"}
+            norm = [[p.get("x"), p.get("y")] if isinstance(p, dict) else p for p in points]
+            ok = WireManager.add_polyline(
+                Path(schematic_path), norm, stroke_width=params.get("strokeWidth", 0.4)
+            )
+            return {
+                "success": ok,
+                "message": (f"Added polyline ({len(norm)} pts)" if ok else "Failed to add polyline"),
+            }
+        except Exception as e:
+            import traceback
+
+            logger.error(f"Error adding polyline: {e}")
+            return {"success": False, "message": str(e), "errorDetails": traceback.format_exc()}
+
+    def _handle_delete_schematic_shape(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """Delete a graphic shape (rectangle/polyline/circle/arc) by a reference point."""
+        try:
+            from pathlib import Path
+
+            from commands.wire_manager import WireManager
+
+            schematic_path = params.get("schematicPath")
+            shape_type = params.get("shapeType")
+            point = params.get("point")
+            if not schematic_path or not shape_type or point is None:
+                return {"success": False, "message": "schematicPath, shapeType and point are required"}
+            if isinstance(point, dict):
+                point = [point.get("x"), point.get("y")]
+            ok = WireManager.delete_shape(
+                Path(schematic_path), shape_type, point, tolerance=params.get("tolerance", 0.5)
+            )
+            return {
+                "success": ok,
+                "message": (f"Deleted {shape_type} near {point}" if ok else f"No {shape_type} found near {point}"),
+            }
+        except Exception as e:
+            import traceback
+
+            logger.error(f"Error deleting shape: {e}")
             return {"success": False, "message": str(e), "errorDetails": traceback.format_exc()}
 
     def _handle_set_schematic_label_orientation(self, params: Dict[str, Any]) -> Dict[str, Any]:
