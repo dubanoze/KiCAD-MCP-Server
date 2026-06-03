@@ -58,6 +58,43 @@ export function registerDesignRuleTools(server: McpServer, callKicadScript: Comm
   );
 
   // ------------------------------------------------------
+  // Set Physical Stackup Tool
+  // ------------------------------------------------------
+  server.tool(
+    "set_stackup",
+    "Define the board physical stackup (copper + dielectric layers, thicknesses, Er, surface finish) by writing the .kicad_pcb stackup block. Generates the standard KiCad stackup from the board's own copper-layer names; backs up the board first and refuses on paren imbalance. For N copper layers supply N-1 dielectrics, top to bottom.",
+    {
+      copper: z
+        .array(z.number())
+        .optional()
+        .describe(
+          "Copper thickness (mm) per copper layer in board order (F.Cu, In1.Cu, ..., B.Cu). Default: outer 0.035, inner 0.018.",
+        ),
+      dielectrics: z
+        .array(
+          z.object({
+            thickness: z.number().describe("Dielectric thickness (mm)"),
+            epsilon_r: z.number().optional().describe("Relative permittivity Dk (default 4.5)"),
+            type: z.string().optional().describe("'prepreg' or 'core' (default 'core')"),
+            loss_tangent: z.number().optional().describe("Loss tangent Df (default 0.02)"),
+          }),
+        )
+        .describe(
+          "Dielectric layers between consecutive copper layers, top to bottom (N copper layers -> N-1 dielectrics)",
+        ),
+      maskThickness: z.number().optional().describe("Solder-mask thickness (mm), default 0.0127"),
+      copperFinish: z.string().optional().describe("Surface finish, e.g. 'ENIG', 'HASL'. Default 'ENIG'"),
+      material: z.string().optional().describe("Dielectric material name, default 'FR4'"),
+    },
+    async (params) => {
+      logger.debug("Setting board physical stackup");
+      const result = await callKicadScript("set_stackup", params);
+
+      return formatKicadResult(result);
+    },
+  );
+
+  // ------------------------------------------------------
   // Get Design Rules Tool
   // ------------------------------------------------------
   server.tool(

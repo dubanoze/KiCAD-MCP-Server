@@ -515,3 +515,28 @@ camelCase params to KiCad's snake_case rule keys.
 **Why:** the board shipped with `min_clearance = 0` (DRC could not catch shorts). Setting JLCPCB
 values (clearance/track 0.127, via 0.45/0.2, hole 0.2) via the existing tool now actually persists.
 Python-only, effective on reconnect.
+
+---
+
+## 25. `set_stackup` — author the physical stackup in `.kicad_pcb`
+
+**Added:** 2026-06-03 · `python/kicad_interface.py` (`_handle_set_stackup`) ·
+`src/tools/design-rules.ts` (new `set_stackup` tool) · `src/tools/registry.ts` (drc category)
+
+New tool to define the board physical stackup. The stackup lives in the board's `(setup ...)`
+block and SWIG `pcbnew` has no API to author it, so the handler edits the s-expression directly:
+it reads the board's own copper-layer names, interleaves them with the supplied dielectrics
+(N copper layers -> N-1 dielectrics), emits the standard KiCad stackup (silk/paste/mask + copper +
+dielectric layers + `copper_finish`), then replaces an existing `(stackup ...)` or inserts one as
+the first child of `(setup ...)`. Params: `copper[]` (per-layer Cu thickness, defaults outer 0.035
+/ inner 0.018), `dielectrics[]` (`thickness`, `epsilon_r`, `type` prepreg|core, `loss_tangent`),
+`maskThickness`, `copperFinish`, `material`.
+
+Safety: the board carries the hand-routed RF corner, so the handler **backs up to
+`<board>.stackup.bak` before writing and refuses on parenthesis imbalance**. Verified end-to-end
+on a board copy — kicad-cli loads the result. First MCP tool requiring a TS rebuild (`npm run
+build`) since the dual-backend bridge; effective on reconnect.
+
+**Why:** the board defaulted to ~1 mm with no controlled stackup; the design targets JLCPCB
+4-layer 0.8 mm JLC7628 (PP 0.2/Er4.6 · core 0.265/Er4.5 · PP 0.2/Er4.6, Cu 35/18/18/35 µm) so the
+0.34 mm RF feed is a real 50 Ω microstrip. Wanted settable from MCP, not only the Board Setup GUI.

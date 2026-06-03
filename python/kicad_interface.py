@@ -509,6 +509,7 @@ class KiCADInterface:
             "get_nets_list": self.routing_commands.get_nets_list,
             "create_netclass": self.routing_commands.create_netclass,
             "add_net_class": self._handle_add_net_class,
+            "set_stackup": self._handle_set_stackup,
             "add_copper_pour": self.routing_commands.add_copper_pour,
             "add_zone": self._handle_add_zone,
             "route_differential_pair": self.routing_commands.route_differential_pair,
@@ -1256,6 +1257,127 @@ class KiCADInterface:
         else:
             result["persistError"] = "Could not locate .kicad_pro (open the project first)"
         return result
+
+    def _handle_set_stackup(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """Write the board physical stackup into the .kicad_pcb (setup) block.
+
+        The stackup lives in the board file, not the project, and there is no SWIG
+        API to author it, so this edits the s-expression directly: it generates the
+        standard KiCad stackup (silk/paste/mask + interleaved copper/dielectric
+        layers + finish) from the board's own copper-layer names and the supplied
+        thicknesses/Er, then replaces an existing (stackup ...) or inserts one as the
+        first child of (setup ...). The board is backed up first and the write is
+        refused on paren imbalance.
+        """
+        import re as _re
+        import shutil as _shutil
+
+        board_path = self._current_board_path()
+        if not board_path:
+            hint = params.get("boardPath")
+            board_path = str(hint) if hint else None
+        if not board_path or not os.path.exists(board_path):
+            return {"success": False, "message": "Could not locate the .kicad_pcb file",
+                    "errorDetails": "Open the board (open_project) or pass boardPath"}
+        try:
+            with open(board_path, "r", encoding="utf-8") as f:
+                text = f.read()
+        except Exception as e:
+            return {"success": False, "message": "Failed to read board", "errorDetails": str(e)}
+
+        lm = _re.search(r'\n(\t*)\(layers\b(.*?)\n\1\)', text, _re.S)
+        cu_layers = []
+        if lm:
+            cu_layers = [nm for nm in _re.findall(r'\(\d+ "([^"]+)" \w+', lm.group(2))
+                         if nm.endswith(".Cu")]
+        if not cu_layers:
+            return {"success": False, "message": "No copper layers found in the board"}
+
+        copper = params.get("copper")
+        if not copper:
+            n = len(cu_layers)
+            copper = [0.035 if (i == 0 or i == n - 1) else 0.018 for i in range(n)]
+        if len(copper) != len(cu_layers):
+            return {"success": False,
+                    "message": f"copper has {len(copper)} entries but the board has "
+                               f"{len(cu_layers)} copper layers ({', '.join(cu_layers)})"}
+
+        dielectrics = params.get("dielectrics") or []
+        if len(dielectrics) != len(cu_layers) - 1:
+            return {"success": False,
+                    "message": f"{len(cu_layers)} copper layers need {len(cu_layers) - 1} "
+                               f"dielectrics, got {len(dielectrics)}"}
+
+        mask = params.get("maskThickness", 0.0127)
+        finish = params.get("copperFinish", "ENIG")
+        material = params.get("material", "FR4")
+
+        i3 = "\t\t\t"
+        L = ["\t\t(stackup"]
+        L.append(f'{i3}(layer "F.SilkS" (type "Top Silk Screen"))')
+        L.append(f'{i3}(layer "F.Paste" (type "Top Solder Paste"))')
+        L.append(f'{i3}(layer "F.Mask" (type "Top Solder Mask") (thickness {mask}) '
+                 f'(material "{material}") (epsilon_r 3.5) (loss_tangent 0.01))')
+        for idx, cu in enumerate(cu_layers):
+            L.append(f'{i3}(layer "{cu}" (type "copper") (thickness {copper[idx]}))')
+            if idx < len(cu_layers) - 1:
+                d = dielectrics[idx]
+                L.append(f'{i3}(layer "dielectric {idx + 1}" (type "{d.get("type", "core")}") '
+                         f'(thickness {d["thickness"]}) (material "{material}") '
+                         f'(epsilon_r {d.get("epsilon_r", 4.5)}) '
+                         f'(loss_tangent {d.get("loss_tangent", 0.02)}))')
+        L.append(f'{i3}(layer "B.Mask" (type "Bottom Solder Mask") (thickness {mask}) '
+                 f'(material "{material}") (epsilon_r 3.5) (loss_tangent 0.01))')
+        L.append(f'{i3}(layer "B.Paste" (type "Bottom Solder Paste"))')
+        L.append(f'{i3}(layer "B.SilkS" (type "Bottom Silk Screen"))')
+        L.append(f'{i3}(copper_finish "{finish}")')
+        L.append(f'{i3}(dielectric_constraints no)')
+        L.append("\t\t)")
+        block = "\n".join(L)
+
+        setup_m = _re.search(r'\n(\t*)\(setup\b', text)
+        if not setup_m:
+            return {"success": False, "message": "No (setup ...) block in the board"}
+        existing = _re.search(r'\n\t\t\(stackup\b', text)
+        if existing:
+            start = existing.start() + 1
+            depth, j = 0, start
+            while j < len(text):
+                if text[j] == '(':
+                    depth += 1
+                elif text[j] == ')':
+                    depth -= 1
+                    if depth == 0:
+                        break
+                j += 1
+            new_text = text[:start] + block + text[j + 1:]
+            action = "replaced"
+        else:
+            line_end = text.find("\n", setup_m.end())
+            new_text = text[:line_end + 1] + block + "\n" + text[line_end + 1:]
+            action = "inserted"
+
+        if new_text.count("(") != new_text.count(")"):
+            return {"success": False,
+                    "message": "Refusing to write: parenthesis imbalance after stackup edit"}
+
+        bak = board_path + ".stackup.bak"
+        try:
+            _shutil.copyfile(board_path, bak)
+            with open(board_path, "w", encoding="utf-8") as f:
+                f.write(new_text)
+        except Exception as e:
+            return {"success": False, "message": "Failed to write board", "errorDetails": str(e)}
+
+        total = sum(copper) + sum(d["thickness"] for d in dielectrics) + 2 * mask
+        return {
+            "success": True,
+            "message": f"Stackup {action}: {len(cu_layers)} copper layers, ~{round(total, 3)} mm finished",
+            "boardPath": board_path,
+            "backup": bak,
+            "copperLayers": cu_layers,
+            "approxThicknessMm": round(total, 3),
+        }
 
     def _dirty_state(self, board_path: Optional[str]) -> Dict[str, Any]:
         """Return the best-known dirty state for the loaded board.
