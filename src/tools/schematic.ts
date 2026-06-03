@@ -1396,6 +1396,53 @@ edit_schematic_component and set its value to an empty string.`,
     },
   );
 
+  // Update cached symbol definitions from their source libraries
+  server.tool(
+    "update_schematic_symbols_from_library",
+    "Refresh the schematic's cached symbol definitions (lib_symbols) from their source " +
+      "libraries — eeschema's 'Update Symbols from Library', done file-side. Clears " +
+      "lib_symbol_mismatch ERC (e.g. kicad-skip/EasyEDA-imported caches that dropped " +
+      "properties KiCad expects). Resolves each lib_id's nickname via the project + global " +
+      "sym-lib-table. By default refreshes every symbol used by a placed instance; narrow " +
+      "with libIds or componentRefs. pruneUnused also removes cache entries no instance " +
+      "references (e.g. a replaced MCU/charger still lingering in the cache).",
+    {
+      schematicPath: z.string().describe("Path to the .kicad_sch file"),
+      libIds: z
+        .array(z.string())
+        .optional()
+        .describe("Limit to these lib_ids (e.g. ['Device:R','Device:C']); default = all used"),
+      componentRefs: z
+        .array(z.string())
+        .optional()
+        .describe("Limit to symbols used by these instance references (e.g. ['R3','C7'])"),
+      pruneUnused: z
+        .boolean()
+        .optional()
+        .describe("Also remove cached symbol definitions not referenced by any instance"),
+      extraLibTables: z
+        .array(z.string())
+        .optional()
+        .describe("Extra sym-lib-table paths to consult (override project/global)"),
+    },
+    async (args: {
+      schematicPath: string;
+      libIds?: string[];
+      componentRefs?: string[];
+      pruneUnused?: boolean;
+      extraLibTables?: string[];
+    }) => {
+      const result = await callKicadScript("update_schematic_symbols_from_library", args);
+      const summary =
+        result.message ||
+        (result.success ? "Symbols updated" : "Failed");
+      return {
+        content: [{ type: "text", text: summary }],
+        isError: !result.success,
+      };
+    },
+  );
+
   // Delete net label from schematic
   server.tool(
     "delete_schematic_net_label",

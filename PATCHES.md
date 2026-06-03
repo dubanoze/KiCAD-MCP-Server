@@ -720,3 +720,34 @@ find `(symbol "<lib_id>" ...)` in `(lib_symbols ...)` → recurse sub-units → 
 `(pin <type> <shape> ... (number "N"))` → rewrite leading type token → dump).
 Re-prettified by the central save hook (patch #28). Handler + dispatch in
 kicad_interface.py; zod enum schema in schematic.ts.
+
+---
+
+## 33. New schematic tool: update_schematic_symbols_from_library
+
+**Added:** 2026-06-04
+**Status:** ✅ local; TS+Python, needs `npm run build` + reconnect to expose
+**Files:** `python/commands/symbol_updater.py` (new), `python/kicad_interface.py`,
+`src/tools/schematic.ts`
+
+### What
+**update_schematic_symbols_from_library** — eeschema's "Update Symbols from Library",
+done file-side. Re-reads each used symbol from its source library and overwrites the
+schematic's `(lib_symbols ...)` cache, clearing `lib_symbol_mismatch` ERC. Options:
+`libIds` / `componentRefs` (narrow scope), `pruneUnused` (drop cache entries no instance
+references), `extraLibTables`.
+
+### Why
+kicad-skip / EasyEDA-imported schematics cache symbol definitions that drop properties
+KiCad 10 expects (e.g. Device:R cached with 5 properties vs 7 in the library) → 33
+lib_symbol_mismatch warnings. No tool existed; only eeschema's GUI action or hand-editing
+the cache could fix it. Per project rule "no scripts on KiCad files — only MCP tools".
+
+### Impl
+`SymbolUpdater.update_from_library`: resolve each lib_id nickname via the **project**
+sym-lib-table (`${KIPRJMOD}` expanded) merged over the **global** sym-lib-table
+(discovered from `%APPDATA%/kicad/<ver>/` or `KICAD_CONFIG_HOME`; `${ENV}` expanded);
+load the library, deep-copy the `(symbol "Name" ...)`, rename its top id to the full
+`Nickname:Name`, and replace the cache entry in place (append if absent). `pruneUnused`
+removes `(symbol "Nick:Name" ...)` cache entries whose id isn't used by any instance.
+Re-prettified by the central save hook (#28).

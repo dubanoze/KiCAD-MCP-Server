@@ -635,6 +635,7 @@ class KiCADInterface:
             "delete_schematic_text": self._handle_delete_schematic_text,
             "edit_schematic_text": self._handle_edit_schematic_text,
             "set_schematic_pin_type": self._handle_set_schematic_pin_type,
+            "update_schematic_symbols_from_library": self._handle_update_schematic_symbols_from_library,
             "export_schematic_pdf": self._handle_export_schematic_pdf,
             "export_schematic_svg": self._handle_export_schematic_svg,
             # Schematic analysis tools (read-only)
@@ -3518,6 +3519,37 @@ class KiCADInterface:
             import traceback
 
             logger.error(f"Error setting pin type: {e}")
+            return {"success": False, "message": str(e), "errorDetails": traceback.format_exc()}
+
+    def _handle_update_schematic_symbols_from_library(
+        self, params: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Refresh cached symbol definitions from their source libraries.
+
+        eeschema's "Update Symbols from Library" done file-side: re-reads each used
+        symbol from the library resolved via the project + global sym-lib-table and
+        overwrites the schematic's (lib_symbols ...) cache, clearing lib_symbol_mismatch.
+        """
+        try:
+            from pathlib import Path
+
+            from commands.symbol_updater import SymbolUpdater
+
+            schematic_path = params.get("schematicPath")
+            if not schematic_path:
+                return {"success": False, "message": "schematicPath is required"}
+            res = SymbolUpdater.update_from_library(
+                Path(schematic_path),
+                only_lib_ids=params.get("libIds"),
+                only_refs=params.get("componentRefs"),
+                prune_unused=bool(params.get("pruneUnused", False)),
+                extra_tables=params.get("extraLibTables"),
+            )
+            return res
+        except Exception as e:
+            import traceback
+
+            logger.error(f"Error updating symbols from library: {e}")
             return {"success": False, "message": str(e), "errorDetails": traceback.format_exc()}
 
     def _handle_connect_to_net(self, params: Dict[str, Any]) -> Dict[str, Any]:
