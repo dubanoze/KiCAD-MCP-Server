@@ -508,6 +508,7 @@ class KiCADInterface:
             "copy_routing_pattern": self.routing_commands.copy_routing_pattern,
             "get_nets_list": self.routing_commands.get_nets_list,
             "create_netclass": self.routing_commands.create_netclass,
+            "add_net_class": self._handle_add_net_class,
             "add_copper_pour": self.routing_commands.add_copper_pour,
             "add_zone": self._handle_add_zone,
             "route_differential_pair": self.routing_commands.route_differential_pair,
@@ -1101,6 +1102,106 @@ class KiCADInterface:
                 return str(candidate.resolve())
 
         return str(Path(candidates[0]).resolve()) if candidates else None
+
+    def _handle_add_net_class(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """Create/update a net class and assign nets to it by writing the project
+        file (.kicad_pro) directly.
+
+        Net classes and net->class assignments live in the project's net_settings,
+        NOT in the board, so the SWIG board-save path never persists them (that is
+        why create_netclass appears to succeed but nothing reaches disk). This
+        handler edits net_settings.classes and net_settings.netclass_patterns in
+        the .kicad_pro JSON, independent of the board/IPC save path.
+        """
+        import json as _json
+
+        name = params.get("name")
+        if not name:
+            return {"success": False, "message": "Missing netclass name",
+                    "errorDetails": "name parameter is required"}
+
+        # Resolve the .kicad_pro path: current project, else derive from an
+        # explicit boardPath/projectPath param.
+        board_path = self._current_board_path()
+        pro_path = self._current_project_file_path(board_path)
+        if not pro_path:
+            hint = params.get("projectPath") or params.get("boardPath")
+            if hint:
+                hint = str(hint)
+                if hint.endswith(".kicad_pro"):
+                    pro_path = hint
+                elif hint.endswith(".kicad_pcb"):
+                    pro_path = hint[: -len(".kicad_pcb")] + ".kicad_pro"
+        if not pro_path or not os.path.exists(pro_path):
+            return {"success": False, "message": "Could not locate the .kicad_pro file",
+                    "errorDetails": "Open the project (open_project) or pass projectPath"}
+
+        try:
+            with open(pro_path, "r", encoding="utf-8") as f:
+                data = _json.load(f)
+        except Exception as e:
+            return {"success": False, "message": "Failed to read project file",
+                    "errorDetails": str(e)}
+
+        ns = data.setdefault("net_settings", {})
+        classes = ns.setdefault("classes", [])
+        template = next((c for c in classes if c.get("name") == "Default"), None)
+        if template is None and classes:
+            template = classes[0]
+
+        track = params.get("trackWidth", params.get("traceWidth"))
+        new_cls = dict(template) if template else {"name": name}
+        new_cls["name"] = name
+        _field_map = {
+            "clearance": params.get("clearance"),
+            "track_width": track,
+            "via_diameter": params.get("viaDiameter"),
+            "via_drill": params.get("viaDrill"),
+            "microvia_diameter": params.get("uvia_diameter", params.get("uviaDiameter")),
+            "microvia_drill": params.get("uvia_drill", params.get("uviaDrill")),
+            "diff_pair_width": params.get("diff_pair_width", params.get("diffPairWidth")),
+            "diff_pair_gap": params.get("diff_pair_gap", params.get("diffPairGap")),
+        }
+        for k, v in _field_map.items():
+            if v is not None:
+                new_cls[k] = v
+        # Custom classes take precedence over Default (max-int priority); first
+        # custom class gets priority 0, each subsequent one a higher number.
+        customs = [c.get("priority") for c in classes
+                   if c.get("name") not in (None, "Default")
+                   and isinstance(c.get("priority"), int) and c["priority"] < 2147483647]
+        new_cls["priority"] = (max(customs) + 1) if customs else 0
+
+        # Upsert the class by name.
+        ns["classes"] = [c for c in classes if c.get("name") != name] + [new_cls]
+
+        # Assign nets via netclass_patterns (exact net-name patterns). Drop any
+        # prior pattern for these nets or for this class to avoid duplicates.
+        nets = params.get("nets") or []
+        net_set = set(nets)
+        patterns = [p for p in ns.get("netclass_patterns", [])
+                    if p.get("pattern") not in net_set and p.get("netclass") != name]
+        for n in nets:
+            patterns.append({"netclass": name, "pattern": n})
+        ns["netclass_patterns"] = patterns
+
+        try:
+            with open(pro_path, "w", encoding="utf-8") as f:
+                _json.dump(data, f, indent=2)
+                f.write("\n")
+        except Exception as e:
+            return {"success": False, "message": "Failed to write project file",
+                    "errorDetails": str(e)}
+
+        return {
+            "success": True,
+            "message": f"Net class '{name}' written to project ({len(nets)} nets assigned)",
+            "projectPath": pro_path,
+            "netClass": {"name": name, "track_width": new_cls.get("track_width"),
+                         "clearance": new_cls.get("clearance"),
+                         "priority": new_cls["priority"]},
+            "nets": nets,
+        }
 
     def _dirty_state(self, board_path: Optional[str]) -> Dict[str, Any]:
         """Return the best-known dirty state for the loaded board.

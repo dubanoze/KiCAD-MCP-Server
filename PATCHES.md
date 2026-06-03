@@ -471,3 +471,28 @@ no TS change; takes effect on backend restart.
 > NB: the **cache** half of this class of bug (lib_symbols parent must carry the `lib:` prefix,
 > sub-symbols `Name_0_1` must NOT) is already handled correctly by `dynamic_symbol_loader.py`
 > (`_extract_symbol_block` skips `_\d+_\d+` names; only the first/top-level name is prefixed).
+
+---
+
+## 23. `add_net_class` — persist net classes to `.kicad_pro` directly
+
+**Added:** 2026-06-03 · `python/kicad_interface.py` (`_handle_add_net_class`, registered as
+the `add_net_class` command)
+
+The `add_net_class` / `assign_net_to_class` tools had no Python handler ("Unknown command"),
+and `create_netclass` mutated the SWIG board's `GetNetClasses()` — but net classes and
+net->class assignments live in the **project** file (`net_settings` in `.kicad_pro`), not the
+board, so a board save never persisted them (the class looked created in memory, then vanished).
+On top of that the board-save path itself was flaky here (IPC project-manager hijack → save fails).
+
+`_handle_add_net_class` writes the `.kicad_pro` JSON directly, independent of the board/IPC save
+path: it upserts the class into `net_settings.classes` (copying the `Default` class as a template
+so every field KiCad expects is present, then overriding clearance/track_width/via_*/diff_pair_*),
+gives custom classes precedence over `Default` (priority 0+ vs Default's max-int), and assigns nets
+via `net_settings.netclass_patterns` (`{netclass, pattern}` exact-name entries, de-duplicated).
+Project path comes from `_current_project_file_path()` (or an explicit `projectPath`/`boardPath`).
+
+**Why:** routing the RF feed needed an `RF` net class (0.34 mm = 50 Ω microstrip on the JLC7628
+0.8 mm stack) assigned to ANT_RF/ANT_FEED/FL_IN/FL_OUT, and no working tool could create+assign
+one. Reuses the existing `add_net_class` TS schema (no TS change); Python-only, effective on
+backend reconnect. Verified: writes `RF` (track 0.34, priority 0) + 4 patterns, valid `.kicad_pro`.
