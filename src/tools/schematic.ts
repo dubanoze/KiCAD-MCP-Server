@@ -1403,9 +1403,12 @@ edit_schematic_component and set its value to an empty string.`,
       "libraries — eeschema's 'Update Symbols from Library', done file-side. Clears " +
       "lib_symbol_mismatch ERC (e.g. kicad-skip/EasyEDA-imported caches that dropped " +
       "properties KiCad expects). Resolves each lib_id's nickname via the project + global " +
-      "sym-lib-table. By default refreshes every symbol used by a placed instance; narrow " +
-      "with libIds or componentRefs. pruneUnused also removes cache entries no instance " +
-      "references (e.g. a replaced MCU/charger still lingering in the cache).",
+      "sym-lib-table. Geometry-safe by default: only refreshes symbols whose library pin " +
+      "signature matches the cache, so wires stay connected; symbols whose pins would move " +
+      "are skipped and reported (skipped_pins_differ). Set allowPinChanges=true to force the " +
+      "full refresh (moves pins, may break connections — like the eeschema GUI). Narrow with " +
+      "libIds or componentRefs. pruneUnused also removes cache entries no instance references " +
+      "(e.g. a replaced MCU/charger still lingering in the cache).",
     {
       schematicPath: z.string().describe("Path to the .kicad_sch file"),
       libIds: z
@@ -1420,6 +1423,12 @@ edit_schematic_component and set its value to an empty string.`,
         .boolean()
         .optional()
         .describe("Also remove cached symbol definitions not referenced by any instance"),
+      allowPinChanges: z
+        .boolean()
+        .optional()
+        .describe(
+          "Force refresh even when pins move (default false = geometry-safe; true may break wiring)",
+        ),
       extraLibTables: z
         .array(z.string())
         .optional()
@@ -1430,6 +1439,7 @@ edit_schematic_component and set its value to an empty string.`,
       libIds?: string[];
       componentRefs?: string[];
       pruneUnused?: boolean;
+      allowPinChanges?: boolean;
       extraLibTables?: string[];
     }) => {
       const result = await callKicadScript("update_schematic_symbols_from_library", args);

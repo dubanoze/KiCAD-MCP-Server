@@ -18,7 +18,7 @@ import logging
 import os
 import re
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import sexpdata
 from sexpdata import Symbol
@@ -128,6 +128,41 @@ def _load_library(path: str, _cache: Dict[str, list]) -> Optional[list]:
     return data
 
 
+def _pin_signature(sym: list) -> Tuple:
+    """Stable signature of a symbol's pins: (number, x, y, angle, length).
+
+    Two symbols with the same signature place their pins at identical offsets, so
+    swapping one cache definition for the other preserves wire/label connectivity.
+    """
+    pins = []
+
+    def walk(node):
+        for child in node[2:] if len(node) > 2 else []:
+            if not (isinstance(child, list) and child):
+                continue
+            if child[0] == _SYM:
+                walk(child)
+            elif child[0] == Symbol("pin"):
+                at = next(
+                    (p for p in child if isinstance(p, list) and p and p[0] == Symbol("at")),
+                    None,
+                )
+                ln = next(
+                    (p for p in child if isinstance(p, list) and p and p[0] == Symbol("length")),
+                    None,
+                )
+                num = next(
+                    (str(p[1]) for p in child
+                     if isinstance(p, list) and p and p[0] == Symbol("number")),
+                    None,
+                )
+                coords = tuple(round(float(v), 4) for v in at[1:]) if at else None
+                length = round(float(ln[1]), 4) if ln else None
+                pins.append((num, coords, length))
+    walk(sym)
+    return tuple(sorted(pins, key=lambda x: str(x[0])))
+
+
 def _find_symbol(lib_data: list, name: str) -> Optional[list]:
     for item in lib_data[1:] if lib_data else []:
         if (
@@ -167,15 +202,25 @@ class SymbolUpdater:
         only_refs: Optional[List[str]] = None,
         prune_unused: bool = False,
         extra_tables: Optional[List[str]] = None,
+        allow_pin_changes: bool = False,
     ) -> Dict:
         """Refresh cached symbol definitions from their source libraries.
 
-        Returns a summary dict: updated/added/unresolved/not_found/pruned lists.
+        By default this is geometry-safe: a cache entry is only replaced when the
+        library symbol's pin signature (numbers + positions + lengths) matches the
+        cached one, so existing wires/labels stay connected. Symbols whose pins
+        would move are skipped and reported under `skipped_pins_differ` — set
+        allow_pin_changes=True to force the full refresh (matches eeschema's
+        "Update Symbols from Library", which moves pins and may break connections).
+
+        Returns a summary dict: updated/added/skipped_pins_differ/unresolved/
+        not_found/pruned lists.
         """
         result = {
             "success": False,
             "updated": [],
             "added": [],
+            "skipped_pins_differ": [],
             "unresolved": [],
             "not_found": [],
             "pruned": [],
@@ -226,17 +271,26 @@ class SymbolUpdater:
                 fresh = copy.deepcopy(src)
                 fresh[1] = lib_id  # top-level name -> full "Nickname:Name"
 
-                # Replace existing cache entry in place, else append.
-                replaced = False
-                for i, it in enumerate(lib_symbols):
-                    if (
-                        isinstance(it, list) and len(it) >= 2
-                        and it[0] == _SYM and str(it[1]) == lib_id
-                    ):
-                        lib_symbols[i] = fresh
-                        replaced = True
-                        break
-                if replaced:
+                # Locate the existing cache entry (if any).
+                idx = next(
+                    (i for i, it in enumerate(lib_symbols)
+                     if isinstance(it, list) and len(it) >= 2
+                     and it[0] == _SYM and str(it[1]) == lib_id),
+                    None,
+                )
+
+                # Geometry-safety gate: skip refreshes that would move pins
+                # (existing wires/labels would dangle), unless explicitly allowed.
+                if (
+                    idx is not None
+                    and not allow_pin_changes
+                    and _pin_signature(lib_symbols[idx]) != _pin_signature(fresh)
+                ):
+                    result["skipped_pins_differ"].append(lib_id)
+                    continue
+
+                if idx is not None:
+                    lib_symbols[idx] = fresh
                     result["updated"].append(lib_id)
                 else:
                     lib_symbols.append(fresh)
@@ -259,8 +313,9 @@ class SymbolUpdater:
             result["success"] = True
             result["message"] = (
                 f"updated {len(result['updated'])}, added {len(result['added'])}, "
-                f"pruned {len(result['pruned'])}, unresolved {len(result['unresolved'])}, "
-                f"not_found {len(result['not_found'])}"
+                f"pruned {len(result['pruned'])}, "
+                f"skipped(pins differ) {len(result['skipped_pins_differ'])}, "
+                f"unresolved {len(result['unresolved'])}, not_found {len(result['not_found'])}"
             )
             return result
         except Exception as e:

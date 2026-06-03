@@ -3544,6 +3544,7 @@ class KiCADInterface:
                 only_refs=params.get("componentRefs"),
                 prune_unused=bool(params.get("pruneUnused", False)),
                 extra_tables=params.get("extraLibTables"),
+                allow_pin_changes=bool(params.get("allowPinChanges", False)),
             )
             return res
         except Exception as e:

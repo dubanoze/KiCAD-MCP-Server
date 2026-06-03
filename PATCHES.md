@@ -751,3 +751,14 @@ load the library, deep-copy the `(symbol "Name" ...)`, rename its top id to the 
 `Nickname:Name`, and replace the cache entry in place (append if absent). `pruneUnused`
 removes `(symbol "Nick:Name" ...)` cache entries whose id isn't used by any instance.
 Re-prettified by the central save hook (#28).
+
+**Geometry-safe by default (important).** A blanket refresh is *not* safe: if a library
+symbol's pins sit at different positions/lengths than the placed/cached copy, refreshing
+moves the pins and every wire/label drawn to the old endpoints dangles. (Seen on this
+project: refreshing all 33 mismatches cleared them but spawned 16 unconnected wires + 9
+isolated labels — from 4 divergent symbols: AP2112K-3.3, USBLC6-2SC6, Antenna_Shield,
+pfp:LSM6DSV32X.) So the tool compares `_pin_signature` (numbers + positions + lengths)
+of cache vs library and **skips** any symbol whose pins would move, reporting it under
+`skipped_pins_differ`. The bulk (R/C/L/LED/connectors/...) is geometry-identical and
+refreshes cleanly. `allowPinChanges=true` forces the eeschema-style full refresh (and you
+then own re-wiring the moved pins).
