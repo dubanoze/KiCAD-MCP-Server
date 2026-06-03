@@ -884,3 +884,26 @@ only MCP tools; add the tool if missing".
 `WireManager.add_polyline` appends a `(polyline)` before `(sheet_instances)`;
 `WireManager.delete_shape` finds the first matching shape by type + reference coordinate and
 removes it. Re-prettified by the central save hook (#28).
+
+---
+
+## 38. Label justify: default to vertically-centered + normalize tool
+
+**Added:** 2026-06-04
+**Status:** ✅ local; add_label fix hot-reloads; new tool needs build + reconnect
+**Files:** `python/commands/wire_manager.py`, `python/kicad_interface.py`, `src/tools/schematic.ts`
+
+### What
+- `WireManager.add_label` no longer appends a `bottom` vertical-justify token — labels are now
+  vertically centered on their wire (KiCad centers when top/bottom is absent).
+- **normalize_schematic_label_justify** — strip top/bottom from every existing label's justify
+  on a sheet (one-shot sweep to center labels added before the fix).
+
+### Why
+add_label hard-coded `(justify <h> bottom)`, which floats label text above the wire; it reads
+as misaligned (visible at the CN3163 charger node and the BT1 battery labels). User feedback:
+labels should be vertically centered. 35 labels across the sheets carried the stray `bottom`.
+
+### Impl
+Drop `Symbol("bottom")` from the add_label effects. `normalize_label_justify` rewrites each
+label's `(justify ...)` keeping only non-vertical tokens. Re-prettified by the save hook (#28).

@@ -315,7 +315,10 @@ class WireManager:
 
             sch_data = sexpdata.loads(sch_content)
 
-            # Orientation-aware justify: KiCAD flips horizontal alignment for 180°/270°
+            # Orientation-aware justify: KiCAD flips horizontal alignment for 180°/270°.
+            # Horizontal token only -> vertically centered on the wire (KiCad has no
+            # explicit 'center' token; omitting top/bottom centers it). A 'bottom'
+            # token would float the text above the wire, which reads as misaligned.
             justify_h = Symbol("right") if orientation in (180, 270) else Symbol("left")
 
             label_sexp = [
@@ -325,7 +328,7 @@ class WireManager:
                 [
                     Symbol("effects"),
                     [Symbol("font"), [Symbol("size"), 1.27, 1.27]],
-                    [Symbol("justify"), justify_h, Symbol("bottom")],
+                    [Symbol("justify"), justify_h],
                 ],
                 [Symbol("uuid"), str(uuid.uuid4())],
             ]
@@ -354,6 +357,48 @@ class WireManager:
 
             logger.error(traceback.format_exc())
             return False
+
+    @staticmethod
+    def normalize_label_justify(schematic_path: Path) -> int:
+        """Strip the vertical (top/bottom) token from every net label's justify so
+        the text is vertically centered on its wire (KiCad has no 'center' token —
+        centering = absence of top/bottom). Returns the number of labels changed.
+        """
+        try:
+            sch_data = sexpdata.loads(schematic_path.read_text(encoding="utf-8"))
+            types = {_SYM_LABEL, _SYM_GLOBAL_LABEL, _SYM_HIERARCHICAL_LABEL}
+            verticals = {"top", "bottom"}
+            changed = 0
+            for item in sch_data:
+                if not (isinstance(item, list) and item and item[0] in types):
+                    continue
+                eff = next(
+                    (p for p in item[1:]
+                     if isinstance(p, list) and p and str(p[0]) == "effects"),
+                    None,
+                )
+                if eff is None:
+                    continue
+                j = next(
+                    (p for p in eff if isinstance(p, list) and p and str(p[0]) == "justify"),
+                    None,
+                )
+                if j is None:
+                    continue
+                kept = [t for t in j[1:] if str(t) not in verticals]
+                if len(kept) != len(j[1:]):
+                    j[:] = [Symbol("justify")] + kept
+                    changed += 1
+            if changed:
+                schematic_path.write_text(sexpdata.dumps(sch_data), encoding="utf-8")
+            logger.info(f"Normalized justify on {changed} labels in {schematic_path.name}")
+            return changed
+        except Exception as e:
+            logger.error(f"Error normalizing label justify: {e}")
+            import traceback
+
+            logger.error(traceback.format_exc())
+            return -1
 
     @staticmethod
     def add_rectangle(

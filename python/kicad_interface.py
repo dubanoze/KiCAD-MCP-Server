@@ -637,6 +637,7 @@ class KiCADInterface:
             "set_schematic_pin_type": self._handle_set_schematic_pin_type,
             "update_schematic_symbols_from_library": self._handle_update_schematic_symbols_from_library,
             "set_schematic_label_orientation": self._handle_set_schematic_label_orientation,
+            "normalize_schematic_label_justify": self._handle_normalize_schematic_label_justify,
             "add_schematic_rectangle": self._handle_add_schematic_rectangle,
             "add_schematic_polyline": self._handle_add_schematic_polyline,
             "delete_schematic_shape": self._handle_delete_schematic_shape,
@@ -3608,6 +3609,26 @@ class KiCADInterface:
             import traceback
 
             logger.error(f"Error deleting shape: {e}")
+            return {"success": False, "message": str(e), "errorDetails": traceback.format_exc()}
+
+    def _handle_normalize_schematic_label_justify(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """Strip top/bottom from every label's justify (vertically center them)."""
+        try:
+            from pathlib import Path
+
+            from commands.wire_manager import WireManager
+
+            schematic_path = params.get("schematicPath")
+            if not schematic_path:
+                return {"success": False, "message": "schematicPath is required"}
+            n = WireManager.normalize_label_justify(Path(schematic_path))
+            if n < 0:
+                return {"success": False, "message": "Error normalizing label justify"}
+            return {"success": True, "changed": n, "message": f"Centered {n} labels"}
+        except Exception as e:
+            import traceback
+
+            logger.error(f"Error normalizing label justify: {e}")
             return {"success": False, "message": str(e), "errorDetails": traceback.format_exc()}
 
     def _handle_set_schematic_label_orientation(self, params: Dict[str, Any]) -> Dict[str, Any]:

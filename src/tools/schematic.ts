@@ -1500,6 +1500,28 @@ edit_schematic_component and set its value to an empty string.`,
     },
   );
 
+  // Vertically center every label (strip top/bottom justify)
+  server.tool(
+    "normalize_schematic_label_justify",
+    "Strip the vertical (top/bottom) token from every net label's text justify so the text " +
+      "sits vertically centered on its wire. KiCad has no explicit 'center' token — centering " +
+      "is the absence of top/bottom; a 'bottom' token floats the text above the wire, which " +
+      "reads as misaligned. Horizontal alignment (left/right) is preserved. Returns the count " +
+      "changed.",
+    {
+      schematicPath: z.string().describe("Path to the .kicad_sch file"),
+    },
+    async (args: { schematicPath: string }) => {
+      const result = await callKicadScript("normalize_schematic_label_justify", args);
+      return {
+        content: [
+          { type: "text", text: result.message || (result.success ? "Labels centered" : "Failed") },
+        ],
+        isError: !result.success,
+      };
+    },
+  );
+
   // Set a net label's rotation / justify without moving it
   server.tool(
     "set_schematic_label_orientation",
