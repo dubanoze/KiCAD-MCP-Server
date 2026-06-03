@@ -5185,27 +5185,41 @@ class KiCADInterface:
             schematic_path = params.get("schematicPath")
             board_path = params.get("boardPath")
 
-            # Determine board to work with
+            # Determine board to work with. PREFER the board already loaded by
+            # open_project (self.board) when it matches the requested path: a fresh
+            # pcbnew.LoadBoard in this long-lived SWIG process frequently returns a
+            # dehydrated proxy, whereas the open_project board is healthy. Only fall
+            # back to _safe_load_board when nothing usable is already loaded.
             board = None
-            if board_path:
-                board = self._safe_load_board(board_path)
-                if board is None:
+            if self.board is not None:
+                try:
+                    cur = self.board.GetFileName()
+                    if self._is_board_healthy(self.board) and (
+                        not board_path
+                        or (cur and Path(cur).resolve() == Path(board_path).resolve())
+                    ):
+                        board = self.board
+                        if not board_path:
+                            board_path = cur
+                except Exception:
+                    board = None
+            if board is None:
+                if board_path:
+                    board = self._safe_load_board(board_path)
+                    if board is None:
+                        return {
+                            "success": False,
+                            "message": f"Could not load board from {board_path}",
+                            "errorDetails": (
+                                "pcbnew.LoadBoard failed or returned a dehydrated "
+                                "SWIG proxy that could not be recovered"
+                            ),
+                        }
+                else:
                     return {
                         "success": False,
-                        "message": f"Could not load board from {board_path}",
-                        "errorDetails": (
-                            "pcbnew.LoadBoard failed or returned a dehydrated "
-                            "SWIG proxy that could not be recovered"
-                        ),
+                        "message": "No board loaded. Use open_project first or provide boardPath.",
                     }
-            elif self.board:
-                board = self.board
-                board_path = board.GetFileName() if not board_path else board_path
-            else:
-                return {
-                    "success": False,
-                    "message": "No board loaded. Use open_project first or provide boardPath.",
-                }
 
             if not board_path:
                 board_path = board.GetFileName()

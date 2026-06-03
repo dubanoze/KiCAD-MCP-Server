@@ -558,3 +558,20 @@ the board to `<board>.zoneclr.bak` first since it carries hand-routed copper.
 which fragmented the top fill around the dense RF cluster. Normalising them to 0.2 mm needed an
 MCP-settable edit of existing zones. SWIG path (KiCad GUI must be closed); the SWIG `ZONE_FILLER`
 refill is the same one `add_zone` uses successfully here. Python+TS, rebuild + reconnect.
+
+---
+
+## 27. `sync_schematic_to_board` — reuse the loaded board instead of reloading
+
+**Added:** 2026-06-03 · `python/kicad_interface.py` (`_handle_sync_schematic_to_board`)
+
+When called with `boardPath`, the sync did a fresh `pcbnew.LoadBoard(boardPath)` via
+`_safe_load_board`, which in this long-lived SWIG process **reliably returned a dehydrated proxy**
+("Could not load board ... dehydrated SWIG proxy") — so the sync was unusable, even though
+`open_project` had already loaded a healthy board into `self.board` and kicad-cli loads the file
+fine. (A fresh process like kicad-cli works; the server's accumulated SWIG state does not.)
+
+Fix: prefer the already-loaded `self.board` when it is healthy and its filename matches the
+requested `boardPath` (resolved), and only fall back to `_safe_load_board` when nothing usable is
+loaded. So the working flow is `open_project` (loads a healthy board) → `sync_schematic_to_board`
+(reuses it, no dehydrating reload). Python-only, effective on reconnect.
