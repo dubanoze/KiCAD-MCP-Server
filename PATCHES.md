@@ -762,3 +762,39 @@ of cache vs library and **skips** any symbol whose pins would move, reporting it
 `skipped_pins_differ`. The bulk (R/C/L/LED/connectors/...) is geometry-identical and
 refreshes cleanly. `allowPinChanges=true` forces the eeschema-style full refresh (and you
 then own re-wiring the moved pins).
+
+---
+
+## 34. Auto-restart the Python backend after a crash
+
+**Added:** 2026-06-04
+**Status:** ✅ local; TS only, needs `npm run build` + reconnect to take effect
+**Files:** `src/server.ts`
+
+### What
+The KiCAD MCP server spawns KiCad's bundled Python as a long-lived child (it owns the
+pcbnew/swig state). If that child died, the server just set `pythonProcess = null` and
+every subsequent tool call failed with *"Python process for KiCAD scripting is not
+running"* until a manual `/mcp` reconnect. The swig backend crashed repeatedly over a
+long session, so each crash meant a manual reconnect + a fresh 1-2 min warm-up.
+
+Now the server **auto-recovers**:
+- The spawn + stdio wiring is factored into `spawnPython()` (reused by `start()` and the
+  restart path); `resetReadyState()` re-arms the READY handshake promise.
+- On child `exit`, `handlePythonExit()` rejects the in-flight request and any queued ones
+  with a clear error (callers fail fast instead of hanging until timeout), then — unless
+  `stop()` set `intentionalStop` — kicks off `ensureRestart()`.
+- `ensureRestart()` respawns, waits for the READY marker, and re-runs the warm-up. It is
+  idempotent (concurrent callers share one `restartPromise`) and has a **crash-loop guard**:
+  >5 restarts within 2 min aborts with a clear message instead of thrashing.
+- `callKicadScript()` now awaits `ensureRestart()` when the backend is down rather than
+  rejecting, so the next tool call transparently waits out the respawn.
+
+The MCP STDIO transport is never touched on restart — only the Python child is replaced,
+so the client stays connected.
+
+### Caveat
+A respawn pays the full pcbnew/wxApp warm-up (~1-2 min). A single tool call may exceed the
+MCP client's own timeout while recovery runs; the restart still completes and the next call
+succeeds. Root cause of the underlying swig crashes is still open (no signal captured in the
+Claude Code mcp-logs); this makes them non-fatal regardless.
