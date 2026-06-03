@@ -356,6 +356,50 @@ class WireManager:
             return False
 
     @staticmethod
+    def add_rectangle(
+        schematic_path: Path,
+        start: List[float],
+        end: List[float],
+        stroke_width: float = 0.3,
+        fill: str = "none",
+    ) -> bool:
+        """Add a graphic rectangle to the schematic (e.g. a block-diagram box).
+
+        fill: 'none' (outline only), 'background' (opaque sheet-background fill —
+        hides anything behind it, e.g. a line passing under the box), or 'color'.
+        """
+        try:
+            with open(schematic_path, "r", encoding="utf-8") as f:
+                sch_data = sexpdata.loads(f.read())
+
+            rect_sexp = [
+                Symbol("rectangle"),
+                [Symbol("start"), start[0], start[1]],
+                [Symbol("end"), end[0], end[1]],
+                [Symbol("stroke"), [Symbol("width"), stroke_width], [Symbol("type"), Symbol("default")]],
+                [Symbol("fill"), [Symbol("type"), Symbol(str(fill))]],
+                [Symbol("uuid"), str(uuid.uuid4())],
+            ]
+
+            insert_at = len(sch_data)
+            for i, item in enumerate(sch_data):
+                if isinstance(item, list) and item and item[0] == _SYM_SHEET_INSTANCES:
+                    insert_at = i
+                    break
+            sch_data.insert(insert_at, rect_sexp)
+
+            with open(schematic_path, "w", encoding="utf-8") as f:
+                f.write(sexpdata.dumps(sch_data))
+            logger.info(f"Added rectangle {start}-{end} (fill={fill}) to {schematic_path.name}")
+            return True
+        except Exception as e:
+            logger.error(f"Error adding rectangle: {e}")
+            import traceback
+
+            logger.error(traceback.format_exc())
+            return False
+
+    @staticmethod
     def _parse_wire(
         wire_item: Any,
     ) -> Optional[Tuple[Tuple[float, float], Tuple[float, float], float, str]]:

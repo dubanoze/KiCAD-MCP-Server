@@ -1396,6 +1396,47 @@ edit_schematic_component and set its value to an empty string.`,
     },
   );
 
+  // Add a graphic rectangle (block-diagram box)
+  server.tool(
+    "add_schematic_rectangle",
+    "Add a graphic rectangle to the schematic — e.g. a box in a hand-drawn block diagram. " +
+      "fill 'none' = outline only; 'background' = opaque sheet-background fill that hides " +
+      "anything drawn behind it (useful to drop a box onto an existing line without splitting " +
+      "it); 'color' = themed fill. Pair with add_schematic_text for the box label.",
+    {
+      schematicPath: z.string().describe("Path to the .kicad_sch file"),
+      start: z
+        .object({ x: z.number(), y: z.number() })
+        .describe("Top-left corner in mm"),
+      end: z
+        .object({ x: z.number(), y: z.number() })
+        .describe("Bottom-right corner in mm"),
+      strokeWidth: z.number().optional().describe("Outline width in mm (default 0.3)"),
+      fill: z
+        .enum(["none", "background", "color"])
+        .optional()
+        .describe("Fill style (default 'none')"),
+    },
+    async (args: {
+      schematicPath: string;
+      start: { x: number; y: number };
+      end: { x: number; y: number };
+      strokeWidth?: number;
+      fill?: string;
+    }) => {
+      const result = await callKicadScript("add_schematic_rectangle", args);
+      return {
+        content: [
+          {
+            type: "text",
+            text: result.message || (result.success ? "Rectangle added" : "Failed"),
+          },
+        ],
+        isError: !result.success,
+      };
+    },
+  );
+
   // Set a net label's rotation / justify without moving it
   server.tool(
     "set_schematic_label_orientation",

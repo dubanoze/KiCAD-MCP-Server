@@ -637,6 +637,7 @@ class KiCADInterface:
             "set_schematic_pin_type": self._handle_set_schematic_pin_type,
             "update_schematic_symbols_from_library": self._handle_update_schematic_symbols_from_library,
             "set_schematic_label_orientation": self._handle_set_schematic_label_orientation,
+            "add_schematic_rectangle": self._handle_add_schematic_rectangle,
             "export_schematic_pdf": self._handle_export_schematic_pdf,
             "export_schematic_svg": self._handle_export_schematic_svg,
             # Schematic analysis tools (read-only)
@@ -3520,6 +3521,39 @@ class KiCADInterface:
             import traceback
 
             logger.error(f"Error setting pin type: {e}")
+            return {"success": False, "message": str(e), "errorDetails": traceback.format_exc()}
+
+    def _handle_add_schematic_rectangle(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """Add a graphic rectangle (block-diagram box) to the schematic."""
+        try:
+            from pathlib import Path
+
+            from commands.wire_manager import WireManager
+
+            schematic_path = params.get("schematicPath")
+            start = params.get("start")
+            end = params.get("end")
+            if not schematic_path or start is None or end is None:
+                return {"success": False, "message": "schematicPath, start and end are required"}
+            if isinstance(start, dict):
+                start = [start.get("x"), start.get("y")]
+            if isinstance(end, dict):
+                end = [end.get("x"), end.get("y")]
+            ok = WireManager.add_rectangle(
+                Path(schematic_path),
+                start,
+                end,
+                stroke_width=params.get("strokeWidth", 0.3),
+                fill=params.get("fill", "none"),
+            )
+            return {
+                "success": ok,
+                "message": (f"Added rectangle {start}-{end}" if ok else "Failed to add rectangle"),
+            }
+        except Exception as e:
+            import traceback
+
+            logger.error(f"Error adding rectangle: {e}")
             return {"success": False, "message": str(e), "errorDetails": traceback.format_exc()}
 
     def _handle_set_schematic_label_orientation(self, params: Dict[str, Any]) -> Dict[str, Any]:

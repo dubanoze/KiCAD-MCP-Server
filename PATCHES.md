@@ -834,3 +834,27 @@ Convention: pin-on-left → text left (rotation 180 + justify right); pin-on-rig
 `WireManager.set_label_orientation`: match the label by name (+ optional position/type),
 rewrite `at[3]` (angle) and/or the `(effects (justify ...))` token, leaving coordinates intact.
 Re-prettified by the central save hook (#28).
+
+---
+
+## 36. New schematic tool: add_schematic_rectangle
+
+**Added:** 2026-06-04
+**Status:** ✅ local; TS+Python, needs `npm run build` + reconnect to expose
+**Files:** `python/commands/wire_manager.py`, `python/kicad_interface.py`, `src/tools/schematic.ts`
+
+### What
+**add_schematic_rectangle** — add a graphic `(rectangle ...)` to a schematic (start/end in mm,
+stroke width, fill). `fill='background'` gives an opaque sheet-background fill that hides
+anything drawn behind the box.
+
+### Why
+The root sheet carries a hand-drawn block diagram (12 graphic rectangles + 13 polylines +
+text). Adding a missing block (an LDO between VBAT and the MCU) needed a new box; only
+add_schematic_text existed for the diagram, no tool for graphic rectangles. `background` fill
+let the box drop onto the existing VBAT polyline without splitting/deleting it. Per the project
+rule "no scripts on KiCad files — only MCP tools; add the tool if missing".
+
+### Impl
+`WireManager.add_rectangle` appends `(rectangle (start)(end)(stroke)(fill)(uuid))` before
+`(sheet_instances)`. Re-prettified by the central save hook (#28).
