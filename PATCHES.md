@@ -793,8 +793,16 @@ Now the server **auto-recovers**:
 The MCP STDIO transport is never touched on restart — only the Python child is replaced,
 so the client stays connected.
 
+### Crash diagnostics
+On every unintended exit, `recordCrash()` appends a JSONL record to
+`<server-root>/logs/python-crashes.jsonl` (gitignored): ISO time, exit code, signal, the
+command in flight when it died (`lastCommand`, the prime suspect), queue depth, restarts in
+the current window, and the last ~40 lines of the child's stderr (where a Python traceback
+or C-level pcbnew message surfaces). This is what was missing when the swig backend crashed
+mid-session — the Claude Code mcp-logs didn't retain the exit signal. Wrapped best-effort so
+logging itself never takes the server down.
+
 ### Caveat
 A respawn pays the full pcbnew/wxApp warm-up (~1-2 min). A single tool call may exceed the
 MCP client's own timeout while recovery runs; the restart still completes and the next call
-succeeds. Root cause of the underlying swig crashes is still open (no signal captured in the
-Claude Code mcp-logs); this makes them non-fatal regardless.
+succeeds.

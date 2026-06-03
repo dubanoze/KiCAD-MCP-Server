@@ -6,7 +6,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import express from "express";
 import { spawn, exec, execSync, ChildProcess } from "child_process";
-import { existsSync, readdirSync } from "fs";
+import { existsSync, readdirSync, appendFileSync, mkdirSync } from "fs";
 import { join, dirname } from "path";
 import { logger } from "./logger.js";
 
@@ -227,6 +227,12 @@ export class KiCADMcpServer {
   private restartPromise: Promise<void> | null = null;
   /** Timestamps (ms) of recent restarts — crash-loop guard. */
   private restartTimes: number[] = [];
+  /** Last command written to the child — recorded in crash diagnostics. */
+  private lastCommand: { command: string; at: number } | null = null;
+  /** Ring buffer of recent Python stderr lines (for crash diagnostics). */
+  private stderrTail: string[] = [];
+  /** Append-only JSONL crash log path (set in constructor). */
+  private crashLogPath: string = "";
 
   /**
    * Constructor for the KiCAD MCP Server
@@ -242,6 +248,10 @@ export class KiCADMcpServer {
     if (!existsSync(this.kicadScriptPath)) {
       throw new Error(`KiCAD interface script not found: ${this.kicadScriptPath}`);
     }
+
+    // Crash diagnostics land in <server-root>/logs/python-crashes.jsonl.
+    // kicadScriptPath is <root>/python/kicad_interface.py.
+    this.crashLogPath = join(dirname(dirname(this.kicadScriptPath)), "logs", "python-crashes.jsonl");
 
     // Initialize the MCP server
     this.server = new McpServer({
@@ -547,10 +557,10 @@ export class KiCADMcpServer {
       },
     });
 
-    // Listen for process exit — drives auto-recovery.
+    // Listen for process exit — drives auto-recovery + crash diagnostics.
     this.pythonProcess.on("exit", (code, signal) => {
       logger.warn(`Python process exited with code ${code} and signal ${signal}`);
-      this.handlePythonExit();
+      this.handlePythonExit(code, signal);
     });
 
     // Listen for process errors
@@ -558,10 +568,17 @@ export class KiCADMcpServer {
       logger.error(`Python process error: ${err.message}`);
     });
 
-    // Set up error logging for stderr
+    // Set up error logging for stderr + keep a ring buffer for crash diagnostics
     if (this.pythonProcess.stderr) {
       this.pythonProcess.stderr.on("data", (data: Buffer) => {
-        logger.error(`Python stderr: ${data.toString()}`);
+        const text = data.toString();
+        logger.error(`Python stderr: ${text}`);
+        for (const line of text.split("\n")) {
+          if (line.trim()) this.stderrTail.push(line);
+        }
+        if (this.stderrTail.length > 80) {
+          this.stderrTail = this.stderrTail.slice(-80);
+        }
       });
     }
 
@@ -603,12 +620,45 @@ export class KiCADMcpServer {
   }
 
   /**
+   * Append a crash diagnostic to <server-root>/logs/python-crashes.jsonl:
+   * exit code/signal, the command in flight when it died, recent stderr
+   * (where a Python traceback or C-level message would appear), and restart
+   * count. Best-effort — wrapped so logging never takes the server down.
+   */
+  private recordCrash(code: number | null, signal: NodeJS.Signals | null): void {
+    if (this.intentionalStop) return;
+    try {
+      const record = {
+        time: new Date().toISOString(),
+        exitCode: code,
+        signal,
+        // The command being processed when the child died (prime suspect).
+        lastCommand: this.processingRequest ? this.lastCommand : null,
+        queuedAtCrash: this.requestQueue.length,
+        restartsInWindow: this.restartTimes.length,
+        stderrTail: this.stderrTail.slice(-40),
+      };
+      mkdirSync(dirname(this.crashLogPath), { recursive: true });
+      appendFileSync(this.crashLogPath, JSON.stringify(record) + "\n", "utf-8");
+      logger.error(
+        `Python crash recorded -> ${this.crashLogPath} ` +
+          `(code=${code}, signal=${signal}, lastCommand=${this.lastCommand?.command ?? "none"})`,
+      );
+    } catch (e) {
+      logger.error(`Failed to write crash log: ${e instanceof Error ? e.message : e}`);
+    }
+  }
+
+  /**
    * Handle the Python child exiting: fail in-flight/queued requests with a
    * clear error (so callers don't hang until timeout) and, unless we are
    * intentionally shutting down, kick off an auto-restart.
    */
-  private handlePythonExit(): void {
+  private handlePythonExit(code: number | null, signal: NodeJS.Signals | null): void {
     this.pythonProcess = null;
+
+    // Record a crash diagnostic (best-effort; never let logging crash us).
+    this.recordCrash(code, signal);
 
     const crashErr = new Error("KiCAD Python backend exited; auto-restarting");
     if (this.currentRequestHandler) {
@@ -977,6 +1027,9 @@ export class KiCADMcpServer {
 
       // Store the current request handler
       this.currentRequestHandler = { resolve, reject, timeoutHandle };
+
+      // Record the in-flight command for crash diagnostics.
+      this.lastCommand = { command: request.command, at: Date.now() };
 
       // Write the request to the Python process
       logger.debug(`Sending request: ${requestStr}`);
