@@ -636,6 +636,7 @@ class KiCADInterface:
             "edit_schematic_text": self._handle_edit_schematic_text,
             "set_schematic_pin_type": self._handle_set_schematic_pin_type,
             "update_schematic_symbols_from_library": self._handle_update_schematic_symbols_from_library,
+            "set_schematic_label_orientation": self._handle_set_schematic_label_orientation,
             "export_schematic_pdf": self._handle_export_schematic_pdf,
             "export_schematic_svg": self._handle_export_schematic_svg,
             # Schematic analysis tools (read-only)
@@ -3519,6 +3520,52 @@ class KiCADInterface:
             import traceback
 
             logger.error(f"Error setting pin type: {e}")
+            return {"success": False, "message": str(e), "errorDetails": traceback.format_exc()}
+
+    def _handle_set_schematic_label_orientation(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """Set a net label's rotation and/or text justify without moving it.
+
+        Fixes 'crooked' labels (text running through wires, global-label flags
+        overlapping the symbol body) by flipping which way the label points,
+        while keeping its position so wire connectivity is unchanged.
+        """
+        try:
+            from pathlib import Path
+
+            from commands.wire_manager import WireManager
+
+            schematic_path = params.get("schematicPath")
+            net_name = params.get("netName")
+            rotation = params.get("rotation")
+            justify = params.get("justify")
+            position = params.get("position")
+            label_type = params.get("labelType")
+            if not schematic_path or not net_name:
+                return {"success": False, "message": "schematicPath and netName are required"}
+            if rotation is None and justify is None:
+                return {"success": False, "message": "Provide rotation and/or justify"}
+            if isinstance(position, dict):
+                position = [position.get("x"), position.get("y")]
+            ok = WireManager.set_label_orientation(
+                Path(schematic_path),
+                net_name,
+                rotation=rotation,
+                justify=justify,
+                position=position,
+                label_type=label_type,
+            )
+            return {
+                "success": ok,
+                "message": (
+                    f"Set '{net_name}' orientation (rotation={rotation}, justify={justify})"
+                    if ok
+                    else "No matching label found"
+                ),
+            }
+        except Exception as e:
+            import traceback
+
+            logger.error(f"Error setting label orientation: {e}")
             return {"success": False, "message": str(e), "errorDetails": traceback.format_exc()}
 
     def _handle_update_schematic_symbols_from_library(

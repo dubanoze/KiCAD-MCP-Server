@@ -806,3 +806,31 @@ logging itself never takes the server down.
 A respawn pays the full pcbnew/wxApp warm-up (~1-2 min). A single tool call may exceed the
 MCP client's own timeout while recovery runs; the restart still completes and the next call
 succeeds.
+
+---
+
+## 35. New schematic tool: set_schematic_label_orientation
+
+**Added:** 2026-06-04
+**Status:** ✅ local; TS+Python, needs `npm run build` + reconnect to expose
+**Files:** `python/commands/wire_manager.py`, `python/kicad_interface.py`, `src/tools/schematic.ts`
+
+### What
+**set_schematic_label_orientation** — set a net label's rotation (the angle in `(at x y angle)`)
+and/or text `justify` (left/right/top/bottom) **without moving it**. Position is preserved, so
+wire connectivity is unchanged — only which way the text / global-label flag points changes.
+
+### Why
+A connector (Debug_Header_2x4_1.27, J2) rendered 'crooked': left-side local labels (rotation 0,
+justify left) ran their text back through the wire stub ("strikethrough"), and right-side GND
+global labels (rotation 180, justify right) pointed their flag into the symbol body, overlapping
+the pin-name text. The fix is orientation, not position (move would risk connectivity and the
+labels were already on their pins). No tool could set label rotation/justify; per the project
+rule "no scripts on KiCad files — only MCP tools; add the tool if missing".
+Convention: pin-on-left → text left (rotation 180 + justify right); pin-on-right → text right
+(rotation 0 + justify left).
+
+### Impl
+`WireManager.set_label_orientation`: match the label by name (+ optional position/type),
+rewrite `at[3]` (angle) and/or the `(effects (justify ...))` token, leaving coordinates intact.
+Re-prettified by the central save hook (#28).

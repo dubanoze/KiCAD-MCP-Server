@@ -1396,6 +1396,57 @@ edit_schematic_component and set its value to an empty string.`,
     },
   );
 
+  // Set a net label's rotation / justify without moving it
+  server.tool(
+    "set_schematic_label_orientation",
+    "Set a net label's rotation (the angle in its (at x y angle)) and/or text justify " +
+      "(left/right/top/bottom) WITHOUT moving it — position is preserved, so wire " +
+      "connectivity is unchanged. Use this to fix 'crooked' labels: local-label text running " +
+      "back through its wire stub, or a global-label flag overlapping the symbol body. " +
+      "Convention: a label whose pin is on the LEFT should point its text left (rotation 180 " +
+      "+ justify right); a label on the RIGHT should point right (rotation 0 + justify left). " +
+      "Use currentPosition to disambiguate when several labels share a name.",
+    {
+      schematicPath: z.string().describe("Path to the .kicad_sch file"),
+      netName: z.string().describe("Net label text to match (e.g. 'GND', 'TIO')"),
+      rotation: z
+        .number()
+        .optional()
+        .describe("New angle for (at x y angle): 0, 90, 180, or 270"),
+      justify: z
+        .string()
+        .optional()
+        .describe("Text justify: 'left', 'right', 'top', 'bottom' (space-separate to combine)"),
+      position: z
+        .object({ x: z.number(), y: z.number() })
+        .optional()
+        .describe("Current position (mm) to disambiguate when multiple labels share the name"),
+      labelType: z
+        .enum(["label", "global_label", "hierarchical_label"])
+        .optional()
+        .describe("Restrict to a specific label type"),
+    },
+    async (args: {
+      schematicPath: string;
+      netName: string;
+      rotation?: number;
+      justify?: string;
+      position?: { x: number; y: number };
+      labelType?: string;
+    }) => {
+      const result = await callKicadScript("set_schematic_label_orientation", args);
+      return {
+        content: [
+          {
+            type: "text",
+            text: result.message || (result.success ? "Orientation updated" : "Failed"),
+          },
+        ],
+        isError: !result.success,
+      };
+    },
+  );
+
   // Update cached symbol definitions from their source libraries
   server.tool(
     "update_schematic_symbols_from_library",

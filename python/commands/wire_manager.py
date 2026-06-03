@@ -1152,6 +1152,95 @@ class WireManager:
             return False
 
     @staticmethod
+    def set_label_orientation(
+        schematic_path: Path,
+        net_name: str,
+        rotation: Optional[float] = None,
+        justify: Optional[str] = None,
+        position: Optional[List[float]] = None,
+        label_type: Optional[str] = None,
+        tolerance: float = 0.5,
+    ) -> bool:
+        """Set a net label's rotation (the angle in `(at x y angle)`) and/or its
+        text justify (left/right/top/bottom). Position never changes, so wire
+        connectivity is preserved — this only flips which way the label text /
+        global-label flag points, fixing overlaps with the symbol body or wires.
+        """
+        try:
+            sch_data = sexpdata.loads(schematic_path.read_text(encoding="utf-8"))
+
+            type_map = {
+                "label": _SYM_LABEL,
+                "global_label": _SYM_GLOBAL_LABEL,
+                "hierarchical_label": _SYM_HIERARCHICAL_LABEL,
+            }
+            allowed = (
+                {type_map[label_type]} if label_type in type_map
+                else {_SYM_LABEL, _SYM_GLOBAL_LABEL, _SYM_HIERARCHICAL_LABEL}
+            )
+            justify_sym = Symbol("justify")
+            effects_sym = Symbol("effects")
+
+            for item in sch_data:
+                if not (isinstance(item, list) and len(item) >= 2 and item[0] in allowed):
+                    continue
+                if str(item[1]) != net_name:
+                    continue
+                at_entry = next(
+                    (p for p in item[1:]
+                     if isinstance(p, list) and len(p) >= 3 and p[0] == _SYM_AT),
+                    None,
+                )
+                if at_entry is None:
+                    continue
+                if position is not None:
+                    lx, ly = float(at_entry[1]), float(at_entry[2])
+                    if not (abs(lx - position[0]) < tolerance
+                            and abs(ly - position[1]) < tolerance):
+                        continue
+
+                if rotation is not None:
+                    if len(at_entry) >= 4:
+                        at_entry[3] = rotation
+                    else:
+                        at_entry.append(rotation)
+
+                if justify is not None:
+                    effects = next(
+                        (p for p in item[1:]
+                         if isinstance(p, list) and p and p[0] == effects_sym),
+                        None,
+                    )
+                    if effects is None:
+                        effects = [effects_sym]
+                        item.append(effects)
+                    j_entry = next(
+                        (p for p in effects[1:]
+                         if isinstance(p, list) and p and p[0] == justify_sym),
+                        None,
+                    )
+                    new_j = [justify_sym] + [Symbol(t) for t in str(justify).split()]
+                    if j_entry is None:
+                        effects.append(new_j)
+                    else:
+                        j_entry[:] = new_j
+
+                schematic_path.write_text(sexpdata.dumps(sch_data), encoding="utf-8")
+                logger.info(
+                    f"Set label '{net_name}' orientation (rotation={rotation}, justify={justify})"
+                )
+                return True
+
+            logger.warning(f"No matching label found for '{net_name}'")
+            return False
+        except Exception as e:
+            logger.error(f"Error setting label orientation: {e}")
+            import traceback
+
+            logger.error(traceback.format_exc())
+            return False
+
+    @staticmethod
     def create_orthogonal_path(
         start: List[float], end: List[float], prefer_horizontal_first: bool = True
     ) -> List[List[float]]:
