@@ -639,6 +639,8 @@ class KiCADInterface:
             "set_schematic_label_orientation": self._handle_set_schematic_label_orientation,
             "normalize_schematic_label_justify": self._handle_normalize_schematic_label_justify,
             "add_schematic_rectangle": self._handle_add_schematic_rectangle,
+            "add_hierarchical_sheet": self._handle_add_hierarchical_sheet,
+            "repair_subsheet_instances": self._handle_repair_subsheet_instances,
             "add_schematic_polyline": self._handle_add_schematic_polyline,
             "delete_schematic_shape": self._handle_delete_schematic_shape,
             "export_schematic_pdf": self._handle_export_schematic_pdf,
@@ -3524,6 +3526,56 @@ class KiCADInterface:
             import traceback
 
             logger.error(f"Error setting pin type: {e}")
+            return {"success": False, "message": str(e), "errorDetails": traceback.format_exc()}
+
+    def _handle_add_hierarchical_sheet(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """Create a hierarchical sub-sheet + add its sheet symbol on the root."""
+        try:
+            from pathlib import Path
+
+            from commands.wire_manager import WireManager
+
+            root_path = params.get("rootPath")
+            subsheet_path = params.get("subsheetPath")
+            sheet_name = params.get("sheetName")
+            position = params.get("position")
+            size = params.get("size")
+            if not all([root_path, subsheet_path, sheet_name]) or position is None:
+                return {"success": False, "message": "rootPath, subsheetPath, sheetName, position required"}
+            if isinstance(position, dict):
+                position = [position.get("x"), position.get("y")]
+            if isinstance(size, dict):
+                size = [size.get("w") or size.get("width"), size.get("h") or size.get("height")]
+            res = WireManager.add_hierarchical_sheet(
+                Path(root_path), Path(subsheet_path), sheet_name, position,
+                size=size, sheet_uuid=params.get("sheetUuid"), subsheet_uuid=params.get("subsheetUuid"),
+            )
+            return res
+        except Exception as e:
+            import traceback
+
+            logger.error(f"Error adding hierarchical sheet: {e}")
+            return {"success": False, "message": str(e), "errorDetails": traceback.format_exc()}
+
+    def _handle_repair_subsheet_instances(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """Add the hierarchical instance path to every symbol on a sub-sheet."""
+        try:
+            from pathlib import Path
+
+            from commands.wire_manager import WireManager
+
+            subsheet_path = params.get("subsheetPath")
+            root_path = params.get("rootPath")
+            if not subsheet_path or not root_path:
+                return {"success": False, "message": "subsheetPath and rootPath are required"}
+            n = WireManager.repair_subsheet_instances(Path(subsheet_path), Path(root_path))
+            if n < 0:
+                return {"success": False, "message": "Could not repair subsheet instances"}
+            return {"success": True, "fixed": n, "message": f"Repaired {n} symbol instances"}
+        except Exception as e:
+            import traceback
+
+            logger.error(f"Error repairing subsheet instances: {e}")
             return {"success": False, "message": str(e), "errorDetails": traceback.format_exc()}
 
     def _handle_add_schematic_rectangle(self, params: Dict[str, Any]) -> Dict[str, Any]:

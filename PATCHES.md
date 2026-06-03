@@ -907,3 +907,34 @@ labels should be vertically centered. 35 labels across the sheets carried the st
 ### Impl
 Drop `Symbol("bottom")` from the add_label effects. `normalize_label_justify` rewrites each
 label's `(justify ...)` keeping only non-vertical tokens. Re-prettified by the save hook (#28).
+
+---
+
+## 39. New schematic tools: add_hierarchical_sheet + repair_subsheet_instances
+
+**Added:** 2026-06-04
+**Status:** ✅ local; TS+Python, needs `npm run build` + reconnect to expose
+**Files:** `python/commands/wire_manager.py`, `python/kicad_interface.py`, `src/tools/schematic.ts`
+
+### What
+- **add_hierarchical_sheet** — author an (empty) sub-sheet .kicad_sch and add its `(sheet ...)`
+  symbol on the parent/root. The sheet symbol is **cloned from an existing one** on the root
+  (guaranteed-correct property format); only name/file/uuid/position/size are rewritten.
+  Returns sheet_uuid / subsheet_uuid / root_uuid.
+- **repair_subsheet_instances** — add the hierarchical instance path
+  `(project "<root>" (path "/<root-uuid>/<sheet-uuid>" (reference)(unit)))` to every symbol on
+  a sub-sheet (deriving the uuids by matching the subsheet filename to a `(sheet)` on the root).
+
+### Why
+Adding a new domain sheet (Storage, for the data-log flash) needs a hierarchical sheet, and
+`add_schematic_component` writes only the **standalone** instance path on a sub-sheet — so
+kicad-cli netlist emits no pins for those components in the full hierarchy (known footgun, see
+project memory). These two tools make creating a sheet + getting connectivity right a pure-MCP
+operation. Per the rule "no scripts on KiCad files — only MCP tools; add the tool if missing".
+
+### Impl
+`WireManager.add_hierarchical_sheet` deep-copies a template `(sheet)`, rewrites the fields, and
+authors a minimal subsheet (`(kicad_sch ... (lib_symbols) (sheet_instances (path "/" (page "1"))))`).
+`WireManager.repair_subsheet_instances` appends the hierarchical project block to each symbol's
+`(instances)`. Re-prettified by the central save hook (#28). Verify with a netlist component/pin
+count after use.

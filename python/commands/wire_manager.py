@@ -445,6 +445,186 @@ class WireManager:
             return False
 
     @staticmethod
+    def add_hierarchical_sheet(
+        root_path: Path,
+        subsheet_path: Path,
+        sheet_name: str,
+        position: List[float],
+        size: Optional[List[float]] = None,
+        sheet_uuid: Optional[str] = None,
+        subsheet_uuid: Optional[str] = None,
+    ) -> dict:
+        """Create a hierarchical sub-sheet: author the (empty) subsheet .kicad_sch and
+        add a (sheet ...) symbol on the parent (root). The sheet symbol is cloned from
+        an existing one on the root so its property format is guaranteed correct; only
+        name/file/uuid/position are rewritten. Connectivity is via global labels (no
+        sheet pins), matching the project. Returns the new uuids for instance-path use.
+        """
+        try:
+            import copy as _copy
+
+            w, h = (size or [90, 32])
+            x, y = float(position[0]), float(position[1])
+            sheet_uuid = sheet_uuid or str(uuid.uuid4())
+            subsheet_uuid = subsheet_uuid or str(uuid.uuid4())
+            sheet_file = Path(subsheet_path).name
+
+            # 1) Author the subsheet file (minimal valid; standalone page 1).
+            if not Path(subsheet_path).exists():
+                sub = [
+                    Symbol("kicad_sch"),
+                    [Symbol("version"), 20260306],
+                    [Symbol("generator"), "eeschema"],
+                    [Symbol("generator_version"), "10.0"],
+                    [Symbol("uuid"), subsheet_uuid],
+                    [Symbol("paper"), "A4"],
+                    [Symbol("lib_symbols")],
+                    [Symbol("sheet_instances"),
+                     [Symbol("path"), "/", [Symbol("page"), "1"]]],
+                ]
+                Path(subsheet_path).write_text(sexpdata.dumps(sub), encoding="utf-8")
+
+            # 2) Add the sheet symbol on the root, cloned from an existing one.
+            root = sexpdata.loads(Path(root_path).read_text(encoding="utf-8"))
+            sheet_sym = Symbol("sheet")
+            template = next(
+                (it for it in root if isinstance(it, list) and it and it[0] == sheet_sym),
+                None,
+            )
+            if template is None:
+                return {"success": False, "message": "No existing (sheet) to use as template"}
+            new_sheet = _copy.deepcopy(template)
+
+            def _set_at(node, nx, ny):
+                at = next((p for p in node if isinstance(p, list) and p and str(p[0]) == "at"), None)
+                if at is not None:
+                    at[1], at[2] = nx, ny
+
+            _set_at(new_sheet, x, y)
+            for e in new_sheet:
+                if not (isinstance(e, list) and e):
+                    continue
+                h0 = str(e[0])
+                if h0 == "uuid":
+                    e[1] = sheet_uuid
+                elif h0 == "size" and len(e) >= 3:
+                    e[1], e[2] = w, h
+                elif h0 == "property" and len(e) >= 3:
+                    if str(e[1]) == "Sheetname":
+                        e[2] = sheet_name
+                        _set_at(e, x, y - 0.8)
+                    elif str(e[1]) == "Sheetfile":
+                        e[2] = sheet_file
+                        _set_at(e, x, y + float(h) + 0.5)
+
+            insert_at = len(root)
+            for i, it in enumerate(root):
+                if isinstance(it, list) and it and str(it[0]) == "sheet_instances":
+                    insert_at = i
+                    break
+            root.insert(insert_at, new_sheet)
+            Path(root_path).write_text(sexpdata.dumps(root), encoding="utf-8")
+
+            root_uuid = next(
+                (str(it[1]) for it in root if isinstance(it, list) and str(it[0]) == "uuid"),
+                None,
+            )
+            logger.info(f"Added hierarchical sheet '{sheet_name}' ({sheet_file})")
+            return {
+                "success": True,
+                "sheet_uuid": sheet_uuid,
+                "subsheet_uuid": subsheet_uuid,
+                "root_uuid": root_uuid,
+                "sheet_file": sheet_file,
+            }
+        except Exception as e:
+            logger.error(f"Error adding hierarchical sheet: {e}")
+            import traceback
+
+            logger.error(traceback.format_exc())
+            return {"success": False, "message": str(e)}
+
+    @staticmethod
+    def repair_subsheet_instances(subsheet_path: Path, root_path: Path) -> int:
+        """Ensure every symbol on a sub-sheet carries the hierarchical instance path
+        `(project "<root>" (path "/<root-uuid>/<sheet-symbol-uuid>" (reference)(unit)))`
+        in addition to its standalone path, so kicad-cli netlist emits its pins in the
+        full hierarchy. Derives the uuids by matching the subsheet's filename to a
+        (sheet) on the root. Returns the number of symbols fixed.
+        """
+        try:
+            root = sexpdata.loads(Path(root_path).read_text(encoding="utf-8"))
+            root_uuid = next(
+                (str(it[1]) for it in root if isinstance(it, list) and str(it[0]) == "uuid"), None
+            )
+            fname = Path(subsheet_path).name
+            sheet_uuid = None
+            for it in root:
+                if not (isinstance(it, list) and it and str(it[0]) == "sheet"):
+                    continue
+                sf = next((str(e[2]) for e in it if isinstance(e, list) and str(e[0]) == "property"
+                           and len(e) >= 3 and str(e[1]) == "Sheetfile"), None)
+                if sf == fname:
+                    sheet_uuid = next((str(e[1]) for e in it if isinstance(e, list)
+                                       and str(e[0]) == "uuid"), None)
+                    break
+            if not (root_uuid and sheet_uuid):
+                logger.error("Could not resolve root/sheet uuid for subsheet instances")
+                return -1
+            # discover project name from any existing striq-style instance in the root tree
+            proj_name = "striq"  # default; overridden below if a different one is found
+            hier_path = f"/{root_uuid}/{sheet_uuid}"
+
+            sch = sexpdata.loads(Path(subsheet_path).read_text(encoding="utf-8"))
+            fixed = 0
+            sym = Symbol("symbol")
+            for it in sch:
+                if not (isinstance(it, list) and it and it[0] == sym):
+                    continue
+                ref = next((str(e[2]) for e in it if isinstance(e, list) and str(e[0]) == "property"
+                            and len(e) >= 3 and str(e[1]) == "Reference"), None)
+                if not ref:
+                    continue
+                instances = next((e for e in it if isinstance(e, list) and str(e[0]) == "instances"), None)
+                if instances is None:
+                    instances = [Symbol("instances")]
+                    it.append(instances)
+                # unit from existing standalone instance, default 1
+                unit = 1
+                proj_blocks = [p for p in instances[1:] if isinstance(p, list) and str(p[0]) == "project"]
+                for pb in proj_blocks:
+                    pth = next((q for q in pb if isinstance(q, list) and str(q[0]) == "path"), None)
+                    if pth:
+                        u = next((q for q in pth if isinstance(q, list) and str(q[0]) == "unit"), None)
+                        if u:
+                            unit = u[1]
+                # already has the hierarchical project block?
+                has_hier = any(
+                    str(pb[1]) == proj_name
+                    and any(isinstance(q, list) and str(q[0]) == "path" and str(q[1]) == hier_path
+                            for q in pb[2:])
+                    for pb in proj_blocks
+                )
+                if has_hier:
+                    continue
+                instances.append([
+                    Symbol("project"), proj_name,
+                    [Symbol("path"), hier_path,
+                     [Symbol("reference"), ref], [Symbol("unit"), unit]],
+                ])
+                fixed += 1
+            if fixed:
+                Path(subsheet_path).write_text(sexpdata.dumps(sch), encoding="utf-8")
+            logger.info(f"Repaired hierarchical instances on {fixed} symbols in {fname}")
+            return fixed
+        except Exception as e:
+            logger.error(f"Error repairing subsheet instances: {e}")
+            import traceback
+
+            logger.error(traceback.format_exc())
+            return -1
+
+    @staticmethod
     def add_polyline(
         schematic_path: Path,
         points: List[List[float]],

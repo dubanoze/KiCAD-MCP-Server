@@ -1396,6 +1396,73 @@ edit_schematic_component and set its value to an empty string.`,
     },
   );
 
+  // Create a hierarchical sub-sheet + add its sheet symbol on the root
+  server.tool(
+    "add_hierarchical_sheet",
+    "Create a hierarchical sub-sheet: author an (empty) subsheet .kicad_sch and add its " +
+      "(sheet ...) symbol on the parent/root schematic. The sheet symbol is cloned from an " +
+      "existing one on the root so the property format is guaranteed correct. Connectivity is " +
+      "via global labels (no sheet pins). Returns sheet_uuid / subsheet_uuid / root_uuid — pass " +
+      "the subsheet to repair_subsheet_instances after placing components so the netlist emits " +
+      "their pins in the full hierarchy.",
+    {
+      rootPath: z.string().describe("Path to the parent/root .kicad_sch"),
+      subsheetPath: z.string().describe("Path of the new sub-sheet .kicad_sch to create"),
+      sheetName: z.string().describe("Sheet name shown on the symbol (e.g. 'Storage')"),
+      position: z.object({ x: z.number(), y: z.number() }).describe("Sheet symbol top-left in mm"),
+      size: z
+        .object({ w: z.number(), h: z.number() })
+        .optional()
+        .describe("Sheet symbol size in mm (default 90x32)"),
+      sheetUuid: z.string().optional().describe("Override the sheet-symbol uuid"),
+      subsheetUuid: z.string().optional().describe("Override the subsheet file uuid"),
+    },
+    async (args: {
+      rootPath: string;
+      subsheetPath: string;
+      sheetName: string;
+      position: { x: number; y: number };
+      size?: { w: number; h: number };
+      sheetUuid?: string;
+      subsheetUuid?: string;
+    }) => {
+      const result = await callKicadScript("add_hierarchical_sheet", args);
+      return {
+        content: [
+          {
+            type: "text",
+            text: result.success
+              ? `Sheet added (sheet_uuid ${result.sheet_uuid}, subsheet_uuid ${result.subsheet_uuid})`
+              : result.message || "Failed",
+          },
+        ],
+        isError: !result.success,
+      };
+    },
+  );
+
+  // Repair hierarchical instance paths on a sub-sheet's symbols
+  server.tool(
+    "repair_subsheet_instances",
+    "Add the hierarchical instance path (project <root>/(root-uuid)/(sheet-uuid)) to every " +
+      "symbol on a sub-sheet, in addition to its standalone path, so kicad-cli netlist emits " +
+      "the pins in the full hierarchy. Run after placing components on a sub-sheet created with " +
+      "add_hierarchical_sheet (add_schematic_component only writes the standalone path).",
+    {
+      subsheetPath: z.string().describe("Path to the sub-sheet .kicad_sch"),
+      rootPath: z.string().describe("Path to the parent/root .kicad_sch"),
+    },
+    async (args: { subsheetPath: string; rootPath: string }) => {
+      const result = await callKicadScript("repair_subsheet_instances", args);
+      return {
+        content: [
+          { type: "text", text: result.message || (result.success ? "Repaired" : "Failed") },
+        ],
+        isError: !result.success,
+      };
+    },
+  );
+
   // Add a graphic rectangle (block-diagram box)
   server.tool(
     "add_schematic_rectangle",
