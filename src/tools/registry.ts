@@ -122,7 +122,7 @@ export const toolCategories: ToolCategory[] = [
   {
     name: "routing",
     description: "Advanced routing operations: vias, copper pours",
-    tools: ["add_via", "add_copper_pour"],
+    tools: ["add_via", "add_copper_pour", "set_zone_clearance"],
   },
   {
     name: "autoroute",

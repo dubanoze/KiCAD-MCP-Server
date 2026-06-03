@@ -480,6 +480,27 @@ export function registerRoutingTools(server: McpServer, callKicadScript: Functio
     },
   );
 
+  // Set zone clearance tool
+  server.tool(
+    "set_zone_clearance",
+    "Set the local clearance of existing copper fill zones (matched by net and/or layer) and refill. Rule-area / keepout zones are skipped. Backs up the board first. SWIG path: run with the KiCad GUI closed.",
+    {
+      clearance: z.number().describe("New local clearance for matched zones (mm)"),
+      net: z.string().optional().describe("Only zones on this net, e.g. 'GND'. Omit for any net."),
+      layer: z
+        .string()
+        .optional()
+        .describe("Only zones on this copper layer, e.g. 'F.Cu'. Omit for any layer."),
+      refill: z.boolean().optional().describe("Refill the zones after setting clearance (default true)"),
+    },
+    async (args: any) => {
+      const result = await callKicadScript("set_zone_clearance", args);
+      return {
+        content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+      };
+    },
+  );
+
   // Delete zones tool
   server.tool(
     "delete_zones",

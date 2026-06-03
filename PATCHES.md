@@ -540,3 +540,21 @@ build`) since the dual-backend bridge; effective on reconnect.
 **Why:** the board defaulted to ~1 mm with no controlled stackup; the design targets JLCPCB
 4-layer 0.8 mm JLC7628 (PP 0.2/Er4.6 · core 0.265/Er4.5 · PP 0.2/Er4.6, Cu 35/18/18/35 µm) so the
 0.34 mm RF feed is a real 50 Ω microstrip. Wanted settable from MCP, not only the Board Setup GUI.
+
+---
+
+## 26. `set_zone_clearance` — edit existing fill-zone clearance + refill
+
+**Added:** 2026-06-03 · `python/kicad_interface.py` (`_handle_set_zone_clearance`) ·
+`src/tools/routing.ts` (new tool) · `src/tools/registry.ts` (routing category)
+
+The existing zone tools only set clearance when *creating* a pour (`add_copper_pour` / `add_zone`);
+there was no way to change the local clearance of an already-placed zone. New `set_zone_clearance`
+matches existing fill zones by `net` and/or `layer` (rule areas / keepouts are skipped via
+`GetIsRuleArea()`), applies `SetLocalClearance`, refills (`ZONE_FILLER`) and self-saves. Backs up
+the board to `<board>.zoneclr.bak` first since it carries hand-routed copper.
+
+**Why:** the GND pours on F.Cu/B.Cu/In2 carried a 0.5 mm local clearance (vs 0.2 on the In1 plane),
+which fragmented the top fill around the dense RF cluster. Normalising them to 0.2 mm needed an
+MCP-settable edit of existing zones. SWIG path (KiCad GUI must be closed); the SWIG `ZONE_FILLER`
+refill is the same one `add_zone` uses successfully here. Python+TS, rebuild + reconnect.

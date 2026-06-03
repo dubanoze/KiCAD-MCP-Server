@@ -510,6 +510,7 @@ class KiCADInterface:
             "create_netclass": self.routing_commands.create_netclass,
             "add_net_class": self._handle_add_net_class,
             "set_stackup": self._handle_set_stackup,
+            "set_zone_clearance": self._handle_set_zone_clearance,
             "add_copper_pour": self.routing_commands.add_copper_pour,
             "add_zone": self._handle_add_zone,
             "route_differential_pair": self.routing_commands.route_differential_pair,
@@ -1257,6 +1258,78 @@ class KiCADInterface:
         else:
             result["persistError"] = "Could not locate .kicad_pro (open the project first)"
         return result
+
+    def _handle_set_zone_clearance(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """Set the local clearance of existing copper fill zones, then refill.
+
+        Matches fill zones by net and/or layer (rule areas / keepouts are skipped),
+        applies SetLocalClearance, and refills so the saved polygons reflect the new
+        clearance. SWIG path — requires the board open in this backend (KiCad GUI
+        closed). Self-saves.
+        """
+        try:
+            import pcbnew
+            if not self.board:
+                return {"success": False, "message": "No board loaded"}
+
+            net = params.get("net")
+            layer = params.get("layer")
+            clearance = params.get("clearance")
+            if clearance is None:
+                return {"success": False, "message": "clearance (mm) is required"}
+            refill = params.get("refill", True)
+            layer_id = self.board.GetLayerID(layer) if layer else None
+
+            changed = []
+            for z in self.board.Zones():
+                try:
+                    if z.GetIsRuleArea():
+                        continue
+                    if net and z.GetNetname() != net:
+                        continue
+                    if layer is not None and z.GetLayer() != layer_id:
+                        continue
+                    z.SetLocalClearance(pcbnew.FromMM(float(clearance)))
+                    changed.append({"net": z.GetNetname(),
+                                    "layer": self.board.GetLayerName(z.GetLayer())})
+                except Exception:
+                    continue
+
+            if not changed:
+                return {"success": False, "message": "No matching fill zones found",
+                        "net": net, "layer": layer}
+
+            # Back up the board before the refill/save (it may carry hand-routed copper).
+            try:
+                import shutil as _shutil
+                bp = self.board.GetFileName()
+                if bp and os.path.exists(bp):
+                    _shutil.copyfile(bp, bp + ".zoneclr.bak")
+            except Exception:
+                pass
+
+            if refill:
+                try:
+                    pcbnew.ZONE_FILLER(self.board).Fill(self.board.Zones())
+                except Exception as e:
+                    return {"success": False, "message": f"clearance set but refill failed: {e}",
+                            "zones": changed}
+
+            self.board.SetModified()
+            try:
+                self.board.Save(self.board.GetFileName())
+            except Exception as e:
+                return {"success": False, "message": f"save failed: {e}"}
+
+            return {
+                "success": True,
+                "message": f"Set clearance {clearance} mm on {len(changed)} zone(s)"
+                           + (", refilled" if refill else ""),
+                "zones": changed,
+            }
+        except Exception as e:
+            logger.error(f"set_zone_clearance error: {e}")
+            return {"success": False, "message": str(e)}
 
     def _handle_set_stackup(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """Write the board physical stackup into the .kicad_pcb (setup) block.
