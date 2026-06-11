@@ -520,18 +520,25 @@ class BoardOutlineCommands:
 
         pts_nm = [pcbnew.VECTOR2I(to_nm(p["x"]), to_nm(p["y"])) for p in raw_pts]
 
-        # --- Edge.Cuts polygon ---
+        # --- Edge slot vs window cutout ---
+        # A closed poly overlapping the existing outline makes the outline
+        # self-intersecting (DRC: "malformed outline"). If the polygon crosses
+        # exactly one straight Edge.Cuts segment in exactly two points, embed
+        # the slot into the outline instead: split that segment and stitch the
+        # interior part of the polygon in as line segments.
         edge_layer = pcbnew.Edge_Cuts
-        poly = pcbnew.PCB_SHAPE(self.board)
-        poly.SetShape(pcbnew.SHAPE_T_POLY)
-        poly.SetLayer(edge_layer)
-        poly.SetWidth(0)
-        pts = pcbnew.VECTOR_VECTOR2I()
-        for p in pts_nm:
-            pts.push_back(p)
-        poly.SetPolyPoints(pts)
-        # SHAPE_T_POLY is implicitly closed — no SetClosed() needed in KiCad 10
-        self.board.Add(poly)
+        merged = self._try_merge_edge_slot(pts_nm)
+        if not merged:
+            poly = pcbnew.PCB_SHAPE(self.board)
+            poly.SetShape(pcbnew.SHAPE_T_POLY)
+            poly.SetLayer(edge_layer)
+            poly.SetWidth(0)
+            pts = pcbnew.VECTOR_VECTOR2I()
+            for p in pts_nm:
+                pts.push_back(p)
+            poly.SetPolyPoints(pts)
+            # SHAPE_T_POLY is implicitly closed — no SetClosed() needed in KiCad 10
+            self.board.Add(poly)
 
         keepout_result = None
         if add_keepout:
@@ -558,13 +565,129 @@ class BoardOutlineCommands:
 
         self.board.SetModified()
         pcbnew.Refresh()
+        mode = "edge slot merged into outline" if merged else "closed window polygon"
         return {
             "success": True,
-            "message": f"Added cutout polygon ({len(raw_pts)} points) to Edge.Cuts"
+            "message": f"Added cutout ({len(raw_pts)} points, {mode}) on Edge.Cuts"
                        + (f" + keepout on all copper layers" if add_keepout and keepout_result and keepout_result.get("added") else ""),
             "points": len(raw_pts),
+            "mode": "edge_slot" if merged else "window",
             "keepout": keepout_result,
         }
+
+    def _try_merge_edge_slot(self, pts_nm) -> bool:
+        """Embed a cutout polygon into the board outline as an edge slot.
+
+        Looks for exactly one straight Edge.Cuts segment crossed by the polygon
+        boundary in exactly two points (and no crossings with any other outline
+        element). On match: splits that segment at the crossing points and adds
+        the interior chain of polygon vertices as outline segments. Returns True
+        when merged; False means the caller should fall back to a closed poly.
+        """
+        EPS = 1000  # 1 µm in nm
+
+        def cross(ox, oy, ax, ay, bx, by):
+            return (ax - ox) * (by - oy) - (ay - oy) * (bx - ox)
+
+        def seg_intersect(p1, p2, p3, p4):
+            """Proper segment intersection point or None (touch counts)."""
+            d1x, d1y = p2.x - p1.x, p2.y - p1.y
+            d2x, d2y = p4.x - p3.x, p4.y - p3.y
+            den = d1x * d2y - d1y * d2x
+            if den == 0:
+                return None
+            t = ((p3.x - p1.x) * d2y - (p3.y - p1.y) * d2x) / den
+            u = ((p3.x - p1.x) * d1y - (p3.y - p1.y) * d1x) / den
+            if -1e-9 <= t <= 1 + 1e-9 and -1e-9 <= u <= 1 + 1e-9:
+                return pcbnew.VECTOR2I(int(round(p1.x + t * d1x)),
+                                       int(round(p1.y + t * d1y)))
+            return None
+
+        edge_lines, edge_others = [], []
+        for d in self.board.GetDrawings():
+            if d.GetLayer() != pcbnew.Edge_Cuts:
+                continue
+            try:
+                shape = d.GetShape()
+            except Exception:
+                continue
+            (edge_lines if shape == pcbnew.SHAPE_T_SEGMENT else edge_others).append(d)
+
+        n = len(pts_nm)
+        hits = {}  # line drawing -> list of (poly_edge_idx, point)
+        for li, line in enumerate(edge_lines):
+            ls, le = line.GetStart(), line.GetEnd()
+            for i in range(n):
+                p = seg_intersect(pts_nm[i], pts_nm[(i + 1) % n], ls, le)
+                if p is not None:
+                    hits.setdefault(li, []).append((i, p))
+        # Polygon must not cross arcs/other outline elements — too ambiguous.
+        for other in edge_others:
+            bb = other.GetBoundingBox()
+            for i in range(n):
+                a, b = pts_nm[i], pts_nm[(i + 1) % n]
+                if (max(a.x, b.x) >= bb.GetLeft() and min(a.x, b.x) <= bb.GetRight()
+                        and max(a.y, b.y) >= bb.GetTop() and min(a.y, b.y) <= bb.GetBottom()):
+                    # bbox proximity only — be conservative and only bail when
+                    # the polygon edge truly crosses the arc's chord
+                    if seg_intersect(a, b, other.GetStart(), other.GetEnd()) is not None:
+                        return False
+
+        crossed = [(li, pl) for li, pl in hits.items() if len(pl) > 0]
+        if len(crossed) != 1 or len(crossed[0][1]) != 2:
+            return False
+        li, ((ia, pa), (ib, pb)) = crossed[0][0], sorted(crossed[0][1])
+        line = edge_lines[li]
+        ls, le = line.GetStart(), line.GetEnd()
+
+        # Interior side of the crossed line = side where the board bbox centre is
+        bbox = self.board.GetBoardEdgesBoundingBox()
+        c = bbox.GetCenter()
+        interior_sign = cross(ls.x, ls.y, le.x, le.y, c.x, c.y)
+        if interior_sign == 0:
+            return False
+
+        # Candidate chain: vertices strictly between the two crossing edges
+        chain = [pts_nm[k % n] for k in range(ia + 1, ib + 1)]
+        def chain_interior(ch):
+            return all(cross(ls.x, ls.y, le.x, le.y, v.x, v.y) * interior_sign > 0
+                       for v in ch)
+        if not chain_interior(chain):
+            chain = [pts_nm[k % n] for k in range(ib + 1, ia + 1 + n)]
+            if not chain_interior(chain):
+                return False
+            pa, pb = pb, pa  # complementary chain runs from the other crossing
+
+        # Order the crossing points along the original segment
+        def t_of(p):
+            dx, dy = le.x - ls.x, le.y - ls.y
+            return ((p.x - ls.x) * dx + (p.y - ls.y) * dy) / float(dx * dx + dy * dy)
+        t_pa, t_pb = t_of(pa), t_of(pb)
+        first, last = (pa, pb) if t_pa <= t_pb else (pb, pa)
+
+        def dist2(a, b):
+            return (a.x - b.x) ** 2 + (a.y - b.y) ** 2
+
+        new_segs = []
+        if dist2(ls, first) > EPS * EPS:
+            new_segs.append((ls, first))
+        if dist2(last, le) > EPS * EPS:
+            new_segs.append((last, le))
+        path = [pa] + chain + [pb]
+        for i in range(len(path) - 1):
+            if dist2(path[i], path[i + 1]) > EPS * EPS:
+                new_segs.append((path[i], path[i + 1]))
+
+        self.board.Remove(line)
+        for a, b in new_segs:
+            seg = pcbnew.PCB_SHAPE(self.board)
+            seg.SetShape(pcbnew.SHAPE_T_SEGMENT)
+            seg.SetLayer(pcbnew.Edge_Cuts)
+            seg.SetWidth(line.GetWidth() or pcbnew.FromMM(0.05))
+            seg.SetStart(a)
+            seg.SetEnd(b)
+            self.board.Add(seg)
+        return True
 
     def delete_pcb_shape(self, params: dict) -> dict:
         """Delete the PCB drawing (line, arc, polygon, rect) nearest to a given point.
@@ -646,10 +769,12 @@ class BoardOutlineCommands:
             dx = zcx - target_x; dy = zcy - target_y
             dist = math.sqrt(dx * dx + dy * dy)
             if dist < best_dist:
-                # Apply layer filter if requested (zones can span multiple layers)
+                # Apply layer filter if requested (zones can span multiple layers).
+                # KiCad 10 renamed LSET.test() -> Contains(); support both.
                 if layer_id is not None:
                     ls = zone.GetLayerSet()
-                    if not ls.test(layer_id):
+                    contains = getattr(ls, "Contains", None) or getattr(ls, "test", None)
+                    if contains is not None and not contains(layer_id):
                         continue
                 best_dist = dist
                 best = zone

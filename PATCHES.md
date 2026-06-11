@@ -938,3 +938,86 @@ authors a minimal subsheet (`(kicad_sch ... (lib_symbols) (sheet_instances (path
 `WireManager.repair_subsheet_instances` appends the hierarchical project block to each symbol's
 `(instances)`. Re-prettified by the central save hook (#28). Verify with a netlist component/pin
 count after use.
+
+## 40. New schematic tool: set_component_dnp
+
+### What
+`set_component_dnp(schematicPath, reference, dnp=true, inBom?)` — sets the
+`(dnp yes|no)` attribute on a placed symbol (optionally `(in_bom ...)` too).
+
+### Why
+striq audit decision: keep crystal load-cap footprints as a tuning option but
+exclude them from assembly (C7/C9/C12/C13), plus XM7 antenna shunt → DNP.
+No existing tool could touch symbol attributes (edit_schematic_component only
+handles text properties).
+
+### Impl
+- `python/commands/wire_manager.py`: static `set_component_dnp` — sexpdata pass
+  over top-level placed `(symbol ...)` blocks, match by `(property "Reference")`,
+  rewrite/insert the `(dnp ...)` token after `(on_board ...)`.
+- `python/kicad_interface.py`: dispatch `set_component_dnp` → `_handle_set_component_dnp`.
+- `src/tools/schematic.ts`: zod schema + registration.
+
+## 41. add_board_cutout / delete_pcb_shape: live-GUI bridge + KiCad 10 LSET fix
+
+### What
+1. `kicad_interface.py`: added `add_board_cutout` and `delete_pcb_shape` to
+   `_BOARD_MUTATING_COMMANDS` so the dual-backend live-GUI bridge engages
+   (GUI flush -> SWIG edit on fresh board -> auto-save -> GUI reload).
+2. `commands/board/outline.py` (`delete_pcb_shape`): zone layer filter used
+   `LSET.test()`, removed in KiCad 10 — now resolves `Contains()` with a
+   `test()` fallback for older APIs.
+
+### Why
+With pcbnew open over IPC, both tools silently edited the stale file-backed
+SWIG board: "success" was reported, but nothing reached disk or the GUI
+(striq motor-slot cutout vanished twice). The bridge predicate only engages
+for commands listed in `_BOARD_MUTATING_COMMANDS` / `_SWIG_SELF_SAVING_COMMANDS`,
+and these two were in neither. The LSET crash surfaced right after: nearest-shape
+search also walks zones (rule areas), and `GetLayerSet().test()` raises
+AttributeError on KiCad 10, failing the whole command.
+
+### Impl notes
+- Bridge membership is enough — no per-tool code changes needed for (1).
+- Found via `~/.kicad-mcp/logs/kicad_interface.log` traceback.
+- Caveat observed while testing: KICAD_MCP_HOTRELOAD reloading command handlers
+  after an on-disk edit dehydrated the SWIG session ("name 'pcbnew' is not
+  defined" from LoadBoard); requires a backend restart. Known issue, see #TODO.
+
+## 42. add_board_cutout: edge-slot merge into the outline
+
+### What
+`add_board_cutout` now detects when the cutout polygon crosses the existing
+board outline and, instead of overlaying a closed `gr_poly` (which makes the
+outline self-intersecting -> DRC "malformed outline"), embeds the slot into
+the outline: the crossed straight Edge.Cuts segment is split at the two
+crossing points and the interior chain of polygon vertices is stitched in as
+`gr_line` segments. Falls back to the old closed-poly behaviour for true
+window cutouts (no crossing), or for ambiguous geometry (crosses arcs, more
+than one segment, !=2 intersections). Result reports `mode: edge_slot|window`.
+
+### Why
+striq motor slot: an edge slot for a cylindrical ERM motor on the board edge.
+The old overlay produced DRC errors: "Board has malformed outline
+(self-intersecting)" x2 + copper_edge_clearance noise.
+
+### Impl
+`outline.py`: `_try_merge_edge_slot(pts_nm)` — pure-python segment
+intersection (param form), interior-side test via board bbox centre sign,
+chain selection with complementary fallback, zero-length stub suppression
+(1 µm eps). Original segment width preserved.
+
+## 43. Hot-reload: mtime gate + dehydration note
+
+### What
+`_maybe_hot_reload` reloads command modules only when some `commands/*.py`
+mtime actually advanced (baseline recorded on first call), instead of
+purging+reimporting on EVERY command.
+
+### Why
+Unconditional reload wasted time and was observed to dehydrate live SWIG
+proxies mid-session (`GetDrawings -> 'SwigPyObject' object is not iterable`,
+`LoadBoard -> name 'pcbnew' is not defined`), forcing MCP reconnects. Note:
+reload after a real edit can still dehydrate the loaded board — re-run
+open_project (handler instances are only re-created there) or restart the
+backend after editing python command files.

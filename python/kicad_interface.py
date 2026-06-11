@@ -302,6 +302,18 @@ elif KICAD_BACKEND == "ipc" and not USE_IPC_BACKEND:
     print(json.dumps(error_response))
     sys.exit(1)
 
+# pcbnew is also needed when the primary backend is IPC: the live-GUI bridge
+# and the dehydration-recovery helper (_safe_load_board) load file-backed
+# boards through SWIG. Without this, recovery dies with
+# "name 'pcbnew' is not defined" whenever KiCad was open at server start.
+if "pcbnew" not in globals():
+    try:
+        import pcbnew  # type: ignore
+
+        logger.info(f"Imported pcbnew for bridge/recovery (IPC primary backend): {pcbnew.__file__}")
+    except Exception as _pcbnew_import_error:
+        logger.warning(f"pcbnew unavailable on IPC path: {_pcbnew_import_error}")
+
 # Import command handlers
 def _load_command_handlers():
     """Import every command-handler class into this module's globals.
@@ -360,10 +372,34 @@ def _maybe_hot_reload():
     if not enabled:
         return
     try:
+        # Only reload when a commands/*.py actually changed since the last
+        # check. Unconditional purge+reimport on every command both wastes
+        # time and has been observed to dehydrate live SWIG proxies
+        # (GetDrawings -> "'SwigPyObject' object is not iterable").
+        global _HOTRELOAD_MTIME
+        cmd_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "commands")
+        latest = 0.0
+        for root, _dirs, files in os.walk(cmd_dir):
+            for fn in files:
+                if fn.endswith(".py"):
+                    try:
+                        latest = max(latest, os.path.getmtime(os.path.join(root, fn)))
+                    except OSError:
+                        pass
+        if "_HOTRELOAD_MTIME" not in globals():
+            _HOTRELOAD_MTIME = latest  # first call: record baseline, no reload
+            return
+        if latest <= _HOTRELOAD_MTIME:
+            return
+        _HOTRELOAD_MTIME = latest
         for _name in [m for m in list(sys.modules) if m == "commands" or m.startswith("commands.")]:
             del sys.modules[_name]
         _load_command_handlers()
-        logger.info("Hot-reloaded command handlers (KICAD_MCP_HOTRELOAD)")
+        logger.info(
+            "Hot-reloaded command handlers (KICAD_MCP_HOTRELOAD); note: live "
+            "SWIG board proxies may dehydrate — re-run open_project if board "
+            "calls start failing"
+        )
     except Exception as e:  # pragma: no cover - best effort dev tool
         logger.warning(f"Hot-reload skipped: {e}")
 
@@ -635,6 +671,7 @@ class KiCADInterface:
             "delete_schematic_text": self._handle_delete_schematic_text,
             "edit_schematic_text": self._handle_edit_schematic_text,
             "set_schematic_pin_type": self._handle_set_schematic_pin_type,
+            "set_component_dnp": self._handle_set_component_dnp,
             "update_schematic_symbols_from_library": self._handle_update_schematic_symbols_from_library,
             "set_schematic_label_orientation": self._handle_set_schematic_label_orientation,
             "normalize_schematic_label_justify": self._handle_normalize_schematic_label_justify,
@@ -966,8 +1003,35 @@ class KiCADInterface:
                 bridged = self._bridge_gui_to_disk()
 
             if handler:
-                # Execute the command
-                result = handler(params)
+                # Execute the command. If the SWIG board proxy dehydrated
+                # (known KiCad 10 bug: method dispatch vanishes after some
+                # save/refresh cycles — "'SwigPyObject' object is not
+                # iterable/has no attribute"), rehydrate from disk and retry
+                # the handler once instead of failing the command.
+                try:
+                    result = handler(params)
+                except (TypeError, AttributeError) as exc:
+                    if "SwigPyObject" not in str(exc):
+                        raise
+                    board_path = self._current_board_path() or getattr(
+                        self, "_last_known_board_path", None
+                    )
+                    if not board_path:
+                        raise
+                    logger.warning(
+                        f"{command}: SWIG board proxy dehydrated ({exc}); "
+                        "rehydrating from disk and retrying once"
+                    )
+                    fresh = self._safe_load_board(board_path)
+                    if fresh is None:
+                        raise
+                    self.board = fresh
+                    self.project_commands.board = fresh
+                    self._update_command_handlers()
+                    self._record_board_signature()
+                    # command_routes was rebuilt with fresh handler objects
+                    handler = self.command_routes.get(command)
+                    result = handler(params)
                 logger.debug(f"Command result: {result}")
 
                 # Add backend indicator
@@ -1095,6 +1159,8 @@ class KiCADInterface:
         "sync_schematic_to_board",
         "connect_passthrough",
         "connect_to_net",
+        "add_board_cutout",
+        "delete_pcb_shape",
     }
 
     # SWIG-path commands that modify the board but write themselves to disk
@@ -1145,6 +1211,10 @@ class KiCADInterface:
             path = self.board.GetFileName()
         except Exception:
             path = None
+        if path:
+            # Remember the path independently of the proxy: rehydration after
+            # SWIG dehydration needs it when board.GetFileName() is gone.
+            self._last_known_board_path = path
         self._board_disk_signature = self._disk_signature(path) if path else None
 
     def _current_board_path(self) -> Optional[str]:
@@ -3481,6 +3551,39 @@ class KiCADInterface:
 
             logger.error(f"Error editing text: {e}")
             return {"success": False, "message": str(e), "errorDetails": traceback.format_exc()}
+
+    def _handle_set_component_dnp(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """Set the DNP (Do Not Populate) attribute of a placed schematic symbol."""
+        try:
+            from pathlib import Path
+
+            from commands.wire_manager import WireManager
+
+            schematic_path = params.get("schematicPath")
+            reference = params.get("reference")
+            dnp = params.get("dnp", True)
+            in_bom = params.get("inBom")  # optional tri-state
+            if not schematic_path or not reference:
+                return {
+                    "success": False,
+                    "message": "schematicPath and reference are required",
+                }
+            ok = WireManager.set_component_dnp(
+                Path(schematic_path),
+                str(reference),
+                dnp=bool(dnp),
+                in_bom=None if in_bom is None else bool(in_bom),
+            )
+            return {
+                "success": ok,
+                "message": (
+                    f"Set DNP={bool(dnp)} on {reference}"
+                    if ok
+                    else f"Component '{reference}' not found"
+                ),
+            }
+        except Exception as e:
+            return {"success": False, "message": f"Error setting DNP: {str(e)}"}
 
     def _handle_set_schematic_pin_type(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """Set the electrical type of one pin in a symbol's cached definition.
