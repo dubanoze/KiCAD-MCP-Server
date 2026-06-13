@@ -80,6 +80,11 @@ class BoardCommands:
         self.outline_commands.board = self.board
         return self.outline_commands.delete_pcb_shape(params)
 
+    def add_edge_cut_line(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """Add a single straight segment on a layer (default Edge.Cuts) to patch an outline"""
+        self.outline_commands.board = self.board
+        return self.outline_commands.add_edge_cut_line(params)
+
     # Delegate view commands
     def get_board_info(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """Get information about the current board"""

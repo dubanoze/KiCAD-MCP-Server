@@ -558,6 +558,7 @@ class KiCADInterface:
             "center_board_on_sheet": self.board_commands.center_board_on_sheet,
             "add_board_cutout": self.board_commands.add_board_cutout,
             "delete_pcb_shape": self.board_commands.delete_pcb_shape,
+            "add_edge_cut_line": self.board_commands.add_edge_cut_line,
             # Component commands
             "route_pad_to_pad": self.routing_commands.route_pad_to_pad,
             "place_component": self._handle_place_component,
@@ -1161,6 +1162,7 @@ class KiCADInterface:
         "connect_to_net",
         "add_board_cutout",
         "delete_pcb_shape",
+        "add_edge_cut_line",
     }
 
     # SWIG-path commands that modify the board but write themselves to disk

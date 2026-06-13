@@ -592,4 +592,29 @@ export function registerBoardTools(server: McpServer, callKicadScript: CommandFu
       }
     },
   );
+
+  // ------------------------------------------------------
+  // Add Edge Cut Line Tool
+  // ------------------------------------------------------
+  server.tool(
+    "add_edge_cut_line",
+    "Add a single straight segment on a layer (default Edge.Cuts) between two points. Use to patch/close a board outline (e.g. after delete_pcb_shape removed an edge-slot detour) without redrawing the whole outline.",
+    {
+      x1: z.number().describe("Start point X in mm"),
+      y1: z.number().describe("Start point Y in mm"),
+      x2: z.number().describe("End point X in mm"),
+      y2: z.number().describe("End point Y in mm"),
+      layer: z.string().optional().describe("Layer name (default: 'Edge.Cuts')"),
+      width: z.number().optional().describe("Stroke width in mm (default: 0 = hairline)"),
+      unit: z.enum(["mm", "mil", "inch"]).optional().describe("Unit (default: mm)"),
+    },
+    async (args: { x1: number; y1: number; x2: number; y2: number; layer?: string; width?: number; unit?: string }) => {
+      const result = await callKicadScript("add_edge_cut_line", args);
+      if (result.success) {
+        return { content: [{ type: "text", text: result.message }] };
+      } else {
+        return { content: [{ type: "text", text: `add_edge_cut_line failed: ${result.message}` }] };
+      }
+    },
+  );
 }

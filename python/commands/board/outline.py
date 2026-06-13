@@ -414,6 +414,52 @@ class BoardOutlineCommands:
         line.SetWidth(0)  # Zero width for edge cuts
         self.board.Add(line)
 
+    def add_edge_cut_line(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """Add a single straight graphic segment on a layer (default Edge.Cuts).
+
+        Used to patch/close a board outline (e.g. after delete_pcb_shape removed
+        an edge-slot detour) without redrawing the whole outline.
+
+        Params:
+            x1, y1, x2, y2 – segment endpoints (mm, required)
+            unit  – "mm" (default)
+            layer – layer name (default "Edge.Cuts")
+            width – stroke width mm (default 0.0 = hairline, canonical for Edge.Cuts)
+        """
+        if not self.board:
+            return {"success": False, "message": "No board is loaded"}
+        try:
+            x1 = float(params["x1"]); y1 = float(params["y1"])
+            x2 = float(params["x2"]); y2 = float(params["y2"])
+        except (KeyError, TypeError, ValueError):
+            return {"success": False, "message": "x1,y1,x2,y2 are required (numbers)"}
+
+        unit = params.get("unit", "mm")
+        layer_name = params.get("layer", "Edge.Cuts")
+        width_mm = float(params.get("width", 0.0))
+
+        def to_nm(v):
+            return pcbnew.FromMM(v) if unit == "mm" else int(v)
+
+        layer_id = self.board.GetLayerID(layer_name)
+        if layer_id < 0:
+            return {"success": False, "message": f"Unknown layer: {layer_name}"}
+
+        seg = pcbnew.PCB_SHAPE(self.board)
+        seg.SetShape(pcbnew.SHAPE_T_SEGMENT)
+        seg.SetLayer(layer_id)
+        seg.SetWidth(to_nm(width_mm) if width_mm > 0 else 0)
+        seg.SetStart(pcbnew.VECTOR2I(to_nm(x1), to_nm(y1)))
+        seg.SetEnd(pcbnew.VECTOR2I(to_nm(x2), to_nm(y2)))
+        self.board.Add(seg)
+        self.board.SetModified()
+        pcbnew.Refresh()
+        return {
+            "success": True,
+            "message": f"Added {layer_name} segment ({x1},{y1})->({x2},{y2})",
+            "layer": layer_name,
+        }
+
     def _add_rounded_rect(
         self,
         center_x_nm: int,

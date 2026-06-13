@@ -1021,3 +1021,27 @@ proxies mid-session (`GetDrawings -> 'SwigPyObject' object is not iterable`,
 reload after a real edit can still dehydrate the loaded board — re-run
 open_project (handler instances are only re-created there) or restart the
 backend after editing python command files.
+
+## 44. New board tool: add_edge_cut_line
+
+### What
+`add_edge_cut_line(x1,y1,x2,y2, layer?="Edge.Cuts", width?=0, unit?="mm")` —
+adds a single straight graphic segment on a layer (default Edge.Cuts).
+
+### Why
+striq: converting the motor edge-slot into a fully-enclosed internal window
+required restoring a straight left board edge after delete_pcb_shape removed
+the slot detour. No existing tool could add a single open Edge.Cuts segment:
+add_board_outline only draws closed shapes (>=3 pts), add_board_cutout draws
+closed polygons. Redrawing the whole outline would mean deleting ~30 segments
+one-by-one. A one-segment primitive is the right tool and broadly reusable for
+outline patching.
+
+### Impl
+- outline.py: `add_edge_cut_line` — PCB_SHAPE SHAPE_T_SEGMENT, layer by name
+  (GetLayerID), width 0 = hairline (canonical Edge.Cuts).
+- board/__init__.py: delegate. kicad_interface.py: dispatch + added to
+  _BOARD_MUTATING_COMMANDS (auto-save + live-GUI bridge).
+- board.ts: zod schema + registration. Requires `npm run build` + /mcp
+  reconnect (NEW tool → node must re-register; python-only restart is not
+  enough).
