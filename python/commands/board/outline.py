@@ -601,8 +601,24 @@ class BoardOutlineCommands:
                 zone.SetLayerSet(pcbnew.LSET.AllCuMask())
                 outline = zone.Outline()
                 outline.NewOutline()
-                for p in pts_nm:
-                    outline.Append(p.x, p.y)
+                # The keepout must carry its own outward clearance: a rule area
+                # has no implicit gap, so copper fills right up to its boundary.
+                # If we used the exact cutout polygon, fill would touch the
+                # cutout edge (0 mm) and trip the board copper-to-edge rule
+                # (typically 0.5 mm). So when keepout_clr > 0 we make the keepout
+                # the cutout's bounding box inflated by keepout_clr — a rectangle
+                # is fine for a keepout (it need not match the chamfered cutout),
+                # and avoids the version-fragile SHAPE_POLY_SET.Inflate API.
+                infl = pcbnew.FromMM(keepout_clr) if keepout_clr > 0 else 0
+                if infl > 0:
+                    xs = [p.x for p in pts_nm]; ys = [p.y for p in pts_nm]
+                    x0, x1 = min(xs) - infl, max(xs) + infl
+                    y0, y1 = min(ys) - infl, max(ys) + infl
+                    for vx, vy in ((x0, y0), (x1, y0), (x1, y1), (x0, y1)):
+                        outline.Append(int(vx), int(vy))
+                else:
+                    for p in pts_nm:
+                        outline.Append(p.x, p.y)
                 zone.SetMinIslandArea(0)
                 self.board.Add(zone)
                 keepout_result = {"added": True, "layers": "all_copper", "clearance_mm": keepout_clr}

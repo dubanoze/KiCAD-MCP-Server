@@ -1007,8 +1007,13 @@ class KiCADInterface:
                 # Execute the command. If the SWIG board proxy dehydrated
                 # (known KiCad 10 bug: method dispatch vanishes after some
                 # save/refresh cycles — "'SwigPyObject' object is not
-                # iterable/has no attribute"), rehydrate from disk and retry
-                # the handler once instead of failing the command.
+                # iterable/has no attribute"), rehydrate the board from disk so
+                # the NEXT call works, but DO NOT auto-re-run the handler:
+                # a board-mutating handler may have already persisted its change
+                # to disk before raising on a late refresh/save, and re-running
+                # on the reloaded board would double-apply it (observed: two
+                # identical Edge.Cuts cutouts / duplicate outline segments).
+                # Surface a clear retry request instead — idempotent and safe.
                 try:
                     result = handler(params)
                 except (TypeError, AttributeError) as exc:
@@ -1021,18 +1026,24 @@ class KiCADInterface:
                         raise
                     logger.warning(
                         f"{command}: SWIG board proxy dehydrated ({exc}); "
-                        "rehydrating from disk and retrying once"
+                        "rehydrating from disk (NOT re-running to avoid double-apply)"
                     )
                     fresh = self._safe_load_board(board_path)
-                    if fresh is None:
-                        raise
-                    self.board = fresh
-                    self.project_commands.board = fresh
-                    self._update_command_handlers()
-                    self._record_board_signature()
-                    # command_routes was rebuilt with fresh handler objects
-                    handler = self.command_routes.get(command)
-                    result = handler(params)
+                    if fresh is not None:
+                        self.board = fresh
+                        self.project_commands.board = fresh
+                        self._update_command_handlers()
+                        self._record_board_signature()
+                    result = {
+                        "success": False,
+                        "message": (
+                            f"{command} aborted: SWIG board proxy was dehydrated. "
+                            "The board has been reloaded from disk — re-issue the "
+                            "command. (Not auto-retried: a partial mutation may "
+                            "have persisted, and re-running could double-apply it.)"
+                        ),
+                        "rehydrated": fresh is not None,
+                    }
                 logger.debug(f"Command result: {result}")
 
                 # Add backend indicator

@@ -1045,3 +1045,32 @@ outline patching.
 - board.ts: zod schema + registration. Requires `npm run build` + /mcp
   reconnect (NEW tool → node must re-register; python-only restart is not
   enough).
+
+## 45. add_board_cutout keepout clearance + retry double-apply fix
+
+### What
+1. add_board_cutout: the keepout rule area now carries an OUTWARD clearance —
+   when keepout_clearance>0 the keepout is the cutout bbox inflated by that
+   amount (a rectangle; a keepout need not match the chamfered cutout). A rule
+   area has no implicit gap, so without this copper fills right to the cutout
+   edge (0 mm) and trips the board copper-to-edge rule (e.g. 0.5 mm).
+2. Dispatcher SWIG-dehydration handler no longer auto-re-runs the handler:
+   it rehydrates the board from disk and returns a "re-issue" failure. Auto
+   re-running double-applied mutating commands that had already persisted
+   before a late refresh/save raised (observed: 2 identical Edge.Cuts cutouts
+   + duplicate outline segments).
+
+### Why
+striq vibro-motor internal window: copper_edge_clearance DRC at the window
+edge; and earlier duplicate geometry from the retry path.
+
+### Impl
+- outline.py add_board_cutout: keepout outline = inflated bbox rect.
+- kicad_interface.py _dispatch_command: rehydrate-only on SwigPyObject error.
+
+### KNOWN ENV HAZARD (not a code bug)
+Multiple MCP node servers (multiple Claude sessions / repeated /mcp reconnects
+without old node exit) share one .kicad_pcb. Their python backends' auto-saves
+clobber each other — a stale-state writer overwrites a correct result. Symptom:
+"Auto-save refused: disk changed externally", and on-disk geometry reverting to
+an older shape. Fix is operational: keep the board open in exactly ONE session.
