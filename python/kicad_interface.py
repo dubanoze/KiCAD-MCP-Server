@@ -1160,6 +1160,7 @@ class KiCADInterface:
         "route_pad_to_pad",
         "add_via",
         "delete_trace",
+        "modify_trace",
         "add_net",
         "add_board_outline",
         "add_mounting_hole",

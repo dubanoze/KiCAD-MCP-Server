@@ -1101,3 +1101,17 @@ clobbered the carefully-set 0.20mm prepreg / Er4.6 dielectrics if used to flip i
 Custom DRC width rule for the RF net is authored as a project `<name>.kicad_dru`
 file (not in the .kicad_pcb/.kicad_pro protected set) — a plain text rules file
 KiCad reads at DRC time; written directly.
+
+## 47. modify_trace: traceUuid param + auto-save
+
+### What
+1. `commands/routing.py modify_trace`: read the trace id from `traceUuid`
+   (the name the TS tool actually sends) as well as legacy `uuid`. It was only
+   reading `uuid`, so every call failed "Missing trace identifier".
+2. Added `modify_trace` to `_BOARD_MUTATING_COMMANDS` so width/layer/net edits
+   auto-save (SWIG board mutation was otherwise lost on the next reload).
+
+### Why
+striq: bulk-fix the RF_ANT_IN antenna-feed segments from a stale 0.20mm to the
+RF net-class 0.34mm (50 ohm). modify_trace by UUID was unusable due to the param
+name mismatch.

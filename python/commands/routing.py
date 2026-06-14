@@ -936,8 +936,9 @@ class RoutingCommands:
                     "errorDetails": "Load or create a board first",
                 }
 
-            # Identification parameters
-            trace_uuid = params.get("uuid")
+            # Identification parameters. The TS tool sends 'traceUuid'; accept
+            # 'uuid' too for backward compat.
+            trace_uuid = params.get("traceUuid") or params.get("uuid")
             position = params.get("position")  # {x, y, unit}
 
             # Modification parameters
