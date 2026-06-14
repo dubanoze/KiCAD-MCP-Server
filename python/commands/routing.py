@@ -1046,6 +1046,270 @@ class RoutingCommands:
                 "errorDetails": str(e),
             }
 
+    def fillet_trace(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """Round the corner between two connected straight track segments.
+
+        Replicates KiCad's "Fillet Tracks" but is more robust:
+        - finds the true corner *vertex* by intersecting the two segment lines,
+          so it works even when the segments meet through a pad or with a small
+          mis-alignment (where the native fillet reports an opaque
+          "Unable to fillet the selected track segments");
+        - when the requested radius does not fit the shorter leg it returns the
+          maximum feasible radius instead of silently failing;
+        - preserves width / net / layer and inserts a tangent PCB_ARC.
+
+        Identify the two segments by ``segment1Uuid`` + ``segment2Uuid``, or by
+        ``corner`` ({x, y, unit}) optionally filtered by ``net`` (the two track
+        segments whose nearest endpoints sit closest to that point are used).
+        ``radius`` is in mm.
+        """
+        try:
+            if not self.board:
+                return {
+                    "success": False,
+                    "message": "No board is loaded",
+                    "errorDetails": "Load or create a board first",
+                }
+
+            radius = params.get("radius")
+            if not radius or radius <= 0:
+                return {
+                    "success": False,
+                    "message": "Missing radius",
+                    "errorDetails": "radius (mm, > 0) is required",
+                }
+
+            uuid1 = params.get("segment1Uuid") or params.get("segment1_uuid")
+            uuid2 = params.get("segment2Uuid") or params.get("segment2_uuid")
+            corner = params.get("corner")
+            net_filter = params.get("net")
+
+            tracks = [t for t in list(self.board.Tracks()) if t.Type() == pcbnew.PCB_TRACE_T]
+
+            def by_uuid(u):
+                for t in tracks:
+                    if t.m_Uuid.AsString() == u:
+                        return t
+                return None
+
+            seg1 = seg2 = None
+            if uuid1 and uuid2:
+                seg1, seg2 = by_uuid(uuid1), by_uuid(uuid2)
+                if seg1 is None or seg2 is None:
+                    return {
+                        "success": False,
+                        "message": "Track not found",
+                        "errorDetails": (
+                            f"Could not resolve segment UUIDs "
+                            f"(seg1={'ok' if seg1 else 'missing'}, "
+                            f"seg2={'ok' if seg2 else 'missing'}); "
+                            "note: only straight segments can be filleted, not arcs/vias"
+                        ),
+                    }
+            elif corner:
+                cu = corner.get("unit", "mm")
+                cs = 1000000 if cu == "mm" else (25400 if cu == "mil" else 25400000)
+                cx, cy = corner["x"] * cs, corner["y"] * cs
+                cand = tracks
+                if net_filter:
+                    cand = [t for t in tracks if t.GetNetname() == net_filter]
+                scored = []
+                for t in cand:
+                    d = min(
+                        math.hypot(t.GetStart().x - cx, t.GetStart().y - cy),
+                        math.hypot(t.GetEnd().x - cx, t.GetEnd().y - cy),
+                    )
+                    scored.append((d, t))
+                scored.sort(key=lambda s: s[0])
+                if len(scored) < 2:
+                    return {
+                        "success": False,
+                        "message": "Corner not found",
+                        "errorDetails": "Fewer than two track segments near the given corner",
+                    }
+                seg1, seg2 = scored[0][1], scored[1][1]
+            else:
+                return {
+                    "success": False,
+                    "message": "Missing identifier",
+                    "errorDetails": "Provide segment1Uuid + segment2Uuid, or a corner point",
+                }
+
+            if seg1.m_Uuid.AsString() == seg2.m_Uuid.AsString():
+                return {
+                    "success": False,
+                    "message": "Same segment",
+                    "errorDetails": "The two identifiers resolve to one segment",
+                }
+            if seg1.GetLayer() != seg2.GetLayer():
+                return {
+                    "success": False,
+                    "message": "Layer mismatch",
+                    "errorDetails": "Both segments must be on the same copper layer to fillet",
+                }
+            if seg1.GetNetCode() != seg2.GetNetCode():
+                return {
+                    "success": False,
+                    "message": "Net mismatch",
+                    "errorDetails": (
+                        f"Segments are on different nets "
+                        f"('{seg1.GetNetname()}' vs '{seg2.GetNetname()}')"
+                    ),
+                }
+
+            # Work in mm for the geometry, convert back to nm on apply.
+            def mm(v):
+                return (v.x / 1000000.0, v.y / 1000000.0)
+
+            s1, e1 = mm(seg1.GetStart()), mm(seg1.GetEnd())
+            s2, e2 = mm(seg2.GetStart()), mm(seg2.GetEnd())
+
+            # Near endpoints = the corner pair (closest of the 4 combinations).
+            combos = [
+                (s1, e1, True, s2, e2, True),    # near1=start1, near2=start2
+                (s1, e1, True, e2, s2, False),   # near1=start1, near2=end2
+                (e1, s1, False, s2, e2, True),   # near1=end1,   near2=start2
+                (e1, s1, False, e2, s2, False),  # near1=end1,   near2=end2
+            ]
+            best = min(
+                combos,
+                key=lambda c: math.hypot(c[0][0] - c[3][0], c[0][1] - c[3][1]),
+            )
+            near1, far1, near1_is_start, near2, far2, near2_is_start = best
+
+            def line_intersect(p1, p2, p3, p4):
+                x1, y1 = p1; x2, y2 = p2; x3, y3 = p3; x4, y4 = p4
+                den = (x1 - x2) * (y3 - y4) - (y1 - y2) * (x3 - x4)
+                if abs(den) < 1e-9:
+                    return None
+                px = ((x1 * y2 - y1 * x2) * (x3 - x4) - (x1 - x2) * (x3 * y4 - y3 * x4)) / den
+                py = ((x1 * y2 - y1 * x2) * (y3 - y4) - (y1 - y2) * (x3 * y4 - y3 * x4)) / den
+                return (px, py)
+
+            V = line_intersect(s1, e1, s2, e2)
+            if V is None:
+                return {
+                    "success": False,
+                    "message": "Collinear segments",
+                    "errorDetails": "Segments are parallel/collinear — no corner to fillet",
+                }
+
+            def unit(frm, to):
+                dx, dy = to[0] - frm[0], to[1] - frm[1]
+                d = math.hypot(dx, dy)
+                if d < 1e-9:
+                    return None, 0.0
+                return (dx / d, dy / d), d
+
+            u1, len1 = unit(V, far1)
+            u2, len2 = unit(V, far2)
+            if u1 is None or u2 is None:
+                return {
+                    "success": False,
+                    "message": "Degenerate segment",
+                    "errorDetails": "A segment has zero length relative to the corner vertex",
+                }
+
+            cos_t = max(-1.0, min(1.0, u1[0] * u2[0] + u1[1] * u2[1]))
+            theta = math.acos(cos_t)
+            if theta < math.radians(1) or theta > math.radians(179):
+                return {
+                    "success": False,
+                    "message": "No usable corner",
+                    "errorDetails": (
+                        f"Angle between segments is {math.degrees(theta):.1f}° "
+                        "(too straight or doubled-back to fillet)"
+                    ),
+                }
+
+            half = theta / 2.0
+            t = radius / math.tan(half)              # tangent distance from vertex
+            max_radius = min(len1, len2) * math.tan(half)
+            if t > len1 + 1e-6 or t > len2 + 1e-6:
+                return {
+                    "success": False,
+                    "message": "Radius too large for these segments",
+                    "errorDetails": (
+                        f"radius {radius:.3f}mm needs {t:.3f}mm of straight on each leg, "
+                        f"but legs are {len1:.3f}mm / {len2:.3f}mm "
+                        f"(angle {math.degrees(theta):.1f}°)"
+                    ),
+                    "maxRadius": round(max_radius, 3),
+                    "cornerAngleDeg": round(math.degrees(theta), 1),
+                }
+
+            T1 = (V[0] + u1[0] * t, V[1] + u1[1] * t)
+            T2 = (V[0] + u2[0] * t, V[1] + u2[1] * t)
+            bx, by = u1[0] + u2[0], u1[1] + u2[1]
+            bl = math.hypot(bx, by)
+            bisector = (bx / bl, by / bl)
+            dist_c = radius / math.sin(half)
+            C = (V[0] + bisector[0] * dist_c, V[1] + bisector[1] * dist_c)
+            mx, my = (T1[0] - C[0]) + (T2[0] - C[0]), (T1[1] - C[1]) + (T2[1] - C[1])
+            ml = math.hypot(mx, my)
+            M = (C[0] + radius * mx / ml, C[1] + radius * my / ml)
+
+            def to_nm(p):
+                return pcbnew.VECTOR2I(int(round(p[0] * 1000000)), int(round(p[1] * 1000000)))
+
+            # Trim the near endpoint of each segment back to its tangent point.
+            if near1_is_start:
+                seg1.SetStart(to_nm(T1))
+            else:
+                seg1.SetEnd(to_nm(T1))
+            if near2_is_start:
+                seg2.SetStart(to_nm(T2))
+            else:
+                seg2.SetEnd(to_nm(T2))
+
+            width_nm = seg1.GetWidth()
+            width_note = None
+            if seg1.GetWidth() != seg2.GetWidth():
+                width_note = (
+                    f"segments differ in width "
+                    f"({seg1.GetWidth()/1e6:.3f} vs {seg2.GetWidth()/1e6:.3f}mm); "
+                    f"arc uses {width_nm/1e6:.3f}mm"
+                )
+
+            arc = pcbnew.PCB_ARC(self.board)
+            arc.SetStart(to_nm(T1))
+            arc.SetMid(to_nm(M))
+            arc.SetEnd(to_nm(T2))
+            arc.SetLayer(seg1.GetLayer())
+            arc.SetWidth(width_nm)
+            arc.SetNet(seg1.GetNet())
+            self.board.Add(arc)
+
+            result = {
+                "success": True,
+                "message": f"Filleted corner with radius {radius:.3f}mm",
+                "radius": round(radius, 4),
+                "maxRadius": round(max_radius, 3),
+                "cornerAngleDeg": round(math.degrees(theta), 1),
+                "vertex": {"x": round(V[0], 4), "y": round(V[1], 4), "unit": "mm"},
+                "arc": {
+                    "start": {"x": round(T1[0], 4), "y": round(T1[1], 4)},
+                    "mid": {"x": round(M[0], 4), "y": round(M[1], 4)},
+                    "end": {"x": round(T2[0], 4), "y": round(T2[1], 4)},
+                    "width": round(width_nm / 1e6, 4),
+                    "net": seg1.GetNetname(),
+                    "layer": self.board.GetLayerName(seg1.GetLayer()),
+                    "unit": "mm",
+                },
+                "trimmed": [seg1.m_Uuid.AsString(), seg2.m_Uuid.AsString()],
+            }
+            if width_note:
+                result["warning"] = width_note
+            return result
+
+        except Exception as e:
+            logger.error(f"Error filleting trace: {str(e)}")
+            return {
+                "success": False,
+                "message": "Failed to fillet trace",
+                "errorDetails": str(e),
+            }
+
     def copy_routing_pattern(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """Copy routing pattern from source components to target components
 

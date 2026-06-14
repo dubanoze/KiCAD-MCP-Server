@@ -1115,3 +1115,37 @@ KiCad reads at DRC time; written directly.
 striq: bulk-fix the RF_ANT_IN antenna-feed segments from a stale 0.20mm to the
 RF net-class 0.34mm (50 ohm). modify_trace by UUID was unusable due to the param
 name mismatch.
+
+## 48. New tool: fillet_trace (round a track corner with a tangent arc)
+
+### What
+`commands/routing.py fillet_trace` + dispatch + `_BOARD_MUTATING_COMMANDS` +
+`src/tools/routing.ts` schema. Rounds the corner between two connected straight
+track segments:
+- finds the true corner **vertex by intersecting the two segment lines**, so it
+  works even when the segments meet *through a pad* or with a sub-0.05mm
+  mis-alignment — exactly the cases where KiCad's native "Fillet Tracks" aborts
+  with the opaque "Unable to fillet the selected track segments";
+- trims each segment's near endpoint back to the tangent point and inserts a
+  `PCB_ARC` (start/mid/end) tangent to both legs, preserving width/net/layer;
+- handles arbitrary corner angles (not just 90°): tangent distance
+  `t = R / tan(theta/2)`, arc-centre on the bisector at `R / sin(theta/2)`;
+- when the requested radius does not fit the shorter leg it returns
+  `success:false` **with `maxRadius`** (the largest feasible radius) and
+  `cornerAngleDeg`, instead of a silent failure.
+
+Identify the corner by `segment1Uuid` + `segment2Uuid`, or by a `corner`
+{x,y,unit} point (optionally `net`-filtered) that auto-selects the two nearest
+segments. Guards: same layer, same net, non-collinear, non-zero legs.
+
+Note `modify_trace` still only edits width/layer/net (no endpoint move) — corner
+trimming is done inside `fillet_trace` via `SetStart`/`SetEnd` on the matched
+`PCB_TRACK`, which is why a separate tool was added rather than extending
+`modify_trace`.
+
+### Why
+striq: smooth the RF feed corners (e.g. FL_OUT 90° bend right after the filter
+FL1). The vertical leg is only ~1.31mm, so KiCad refused a 2mm (79mil) fillet
+with no explanation; fillet_trace reports the real ceiling (~1.0mm here) and
+lays a clean controlled-width arc — important for 2.4GHz microstrip where sharp
+90° corners cause impedance discontinuity / reflection.

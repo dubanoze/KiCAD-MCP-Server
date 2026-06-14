@@ -402,6 +402,41 @@ export function registerRoutingTools(server: McpServer, callKicadScript: Functio
     },
   );
 
+  // Fillet (round) the corner between two connected straight track segments
+  server.tool(
+    "fillet_trace",
+    "Round the corner between two connected straight track segments with a tangent arc. " +
+      "More robust than KiCad's native Fillet Tracks: finds the true corner via line " +
+      "intersection (works through pads / small mis-alignments), preserves width/net/layer, " +
+      "and returns the maximum feasible radius when the requested one does not fit. " +
+      "Identify the corner by two segment UUIDs, or by a corner point (optionally net-filtered).",
+    {
+      radius: z.number().describe("Fillet radius in mm (> 0)"),
+      segment1Uuid: z.string().optional().describe("UUID of the first straight segment at the corner"),
+      segment2Uuid: z.string().optional().describe("UUID of the second straight segment at the corner"),
+      corner: z
+        .object({
+          x: z.number(),
+          y: z.number(),
+          unit: z.string().optional().describe("mm (default), mil, or inch"),
+        })
+        .optional()
+        .describe("Corner point — auto-selects the two nearest segments (alternative to UUIDs)"),
+      net: z.string().optional().describe("Restrict corner auto-detect to this net name"),
+    },
+    async (args: any) => {
+      const result = await callKicadScript("fillet_trace", args);
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify(result, null, 2),
+          },
+        ],
+      };
+    },
+  );
+
   // Create netclass tool
   server.tool(
     "create_netclass",
