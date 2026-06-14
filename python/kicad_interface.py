@@ -7519,19 +7519,31 @@ print("ok")
                         except Exception:
                             pass
 
-            # Apply doNotAllow flags defensively (method names are stable across
-            # KiCad 7-10 but guard anyway so a rename can't silently no-op).
+            # Apply doNotAllow flags. Method names drifted across KiCad 7-10
+            # (e.g. SetDoNotAllowCopperPour -> SetDoNotAllowZoneFills in KiCad 9+),
+            # so try candidates. A new rule area defaults every flag to "allowed",
+            # so a missing setter is only fatal when we actually need to FORBID
+            # that flag; when the request is "allow" (the default) we skip safely.
             applied = {}
-            for key, method, val in (
-                ("footprints", "SetDoNotAllowFootprints", forbid_footprints),
-                ("tracks", "SetDoNotAllowTracks", forbid_tracks),
-                ("vias", "SetDoNotAllowVias", forbid_vias),
-                ("pads", "SetDoNotAllowPads", forbid_pads),
-                ("copperpour", "SetDoNotAllowCopperPour", forbid_pour),
+            skipped = []
+            for key, methods, val in (
+                ("footprints", ("SetDoNotAllowFootprints",), forbid_footprints),
+                ("tracks", ("SetDoNotAllowTracks",), forbid_tracks),
+                ("vias", ("SetDoNotAllowVias",), forbid_vias),
+                ("pads", ("SetDoNotAllowPads",), forbid_pads),
+                ("copperpour", ("SetDoNotAllowZoneFills", "SetDoNotAllowCopperPour"), forbid_pour),
             ):
-                fn = getattr(z, method, None)
+                fn = None
+                for m in methods:
+                    fn = getattr(z, m, None)
+                    if fn:
+                        break
                 if fn is None:
-                    return {"success": False, "message": f"KiCad ZONE missing {method}; cannot set keepout flag '{key}'"}
+                    if val:
+                        return {"success": False,
+                                "message": f"KiCad ZONE has no setter for keepout flag '{key}' (tried {list(methods)}); cannot forbid it"}
+                    skipped.append(key)
+                    continue
                 fn(val)
                 applied[key] = val
 
