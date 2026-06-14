@@ -34,6 +34,7 @@ export const toolCategories: ToolCategory[] = [
       "add_mounting_hole",
       "add_board_text",
       "add_zone",
+      "add_keepout_zone",
       "get_board_extents",
       "get_board_2d_view",
       "launch_kicad_ui",

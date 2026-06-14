@@ -334,6 +334,44 @@ export function registerBoardTools(server: McpServer, callKicadScript: CommandFu
   );
 
   // ------------------------------------------------------
+  // Add Keepout (Rule Area) Zone Tool
+  // ------------------------------------------------------
+  server.tool(
+    "add_keepout_zone",
+    "Create a named rule-area (keepout) zone. Unlike add_zone (a filled copper pour), " +
+      "this places a rule area with configurable doNotAllow flags. Default = a component-" +
+      "placement keepout: footprints FORBIDDEN, tracks/vias/pads/copper-pour ALLOWED — e.g. " +
+      "an antenna clearance boundary where no parts may intrude but GND stitching vias still can. " +
+      "Multi-layer (defaults to all copper layers), not filled.",
+    {
+      points: z
+        .array(z.object({ x: z.number(), y: z.number() }))
+        .describe("Polygon outline points (>=3) of the keepout, in mm"),
+      name: z.string().optional().describe("Zone name (e.g. 'antenna_keepout')"),
+      layers: z
+        .array(z.string())
+        .optional()
+        .describe("Copper layers (default: F.Cu, In1.Cu, In2.Cu, B.Cu)"),
+      forbidFootprints: z.boolean().optional().describe("Forbid component footprints (default true)"),
+      forbidTracks: z.boolean().optional().describe("Forbid tracks (default false)"),
+      forbidVias: z.boolean().optional().describe("Forbid vias (default false — vias allowed)"),
+      forbidPads: z.boolean().optional().describe("Forbid pads (default false)"),
+      forbidCopperPour: z.boolean().optional().describe("Forbid copper pour fill (default false)"),
+    },
+    async (args: any) => {
+      const result = await callKicadScript("add_keepout_zone", args);
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify(result),
+          },
+        ],
+      };
+    },
+  );
+
+  // ------------------------------------------------------
   // Get Board Extents Tool
   // ------------------------------------------------------
   server.tool(

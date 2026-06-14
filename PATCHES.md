@@ -1166,3 +1166,23 @@ Switched to `GetNetInfo().GetNetItem(net)` — the same direct lookup that
 striq: rerouting the HSE crystal net X32MO (delete_trace + 5x route_trace) hard-
 crashed the backend on every route_trace until the net lookup was changed. With
 GetNetItem the same 5 segments routed first-try in SWIG mode.
+
+## 50. New tool: add_keepout_zone (rule-area / placement keepout)
+
+### What
+`add_keepout_zone` — `_handle_add_keepout_zone` + command_routes + _SWIG_SELF_SAVING
++ `src/tools/board.ts` schema + registry. Creates a named **rule-area** ZONE
+(`SetIsRuleArea(True)`) with configurable doNotAllow flags
+(footprints/tracks/vias/pads/copperpour), multi-layer (default all 4 Cu), NOT
+filled (no ZONE_FILLER — avoids the swig fill segfault), self-saves.
+
+`add_zone` only makes filled copper pours (`SetIsRuleArea(False)` hard-coded), so
+there was no way to place a keepout via MCP. Default flags = component-placement
+keepout: footprints FORBIDDEN, everything else allowed. doNotAllow setters are
+called through a guard that errors loudly if a method name is missing (rather
+than silently no-opping the flag). LSET built via AddLayer with fallbacks.
+
+### Why
+striq: antenna clearance boundary — "no components may intrude around the niche
+antenna, but GND stitching vias are still allowed there." Was an open TODO in
+hardware/antenna/ANE-niche-antenna-notes.md ("Добавить add_keepout_zone").

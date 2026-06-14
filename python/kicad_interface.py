@@ -596,6 +596,7 @@ class KiCADInterface:
             "set_zone_clearance": self._handle_set_zone_clearance,
             "add_copper_pour": self.routing_commands.add_copper_pour,
             "add_zone": self._handle_add_zone,
+            "add_keepout_zone": self._handle_add_keepout_zone,
             "route_differential_pair": self.routing_commands.route_differential_pair,
             "refill_zones": self._handle_refill_zones,
             "delete_zones": self._handle_delete_zones,
@@ -1190,6 +1191,7 @@ class KiCADInterface:
         "assign_footprint_graphic_net",
         "convert_footprint_graphics_to_tracks",
         "add_zone",
+        "add_keepout_zone",
         "set_pad_zone_connection",
     }
 
@@ -7454,6 +7456,111 @@ print("ok")
             }
         except Exception as e:
             logger.error(f"add_zone error: {e}")
+            return {"success": False, "message": str(e)}
+
+    def _handle_add_keepout_zone(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """SWIG handler for add_keepout_zone — a named rule-area (keepout) zone.
+
+        Unlike add_zone (a filled copper pour), this creates a *rule area* with
+        configurable doNotAllow flags. Default = a component-placement keepout:
+        footprints forbidden, tracks/vias/pads/copper-pour allowed. Multi-layer,
+        not filled, self-saves. Used e.g. for an antenna clearance boundary where
+        no components may intrude but GND stitching vias are still allowed.
+        """
+        try:
+            import pcbnew
+
+            if not self.board:
+                return {"success": False, "message": "No board loaded"}
+
+            points = params.get("points") or params.get("outline") or []
+            if not points or len(points) < 3:
+                return {"success": False, "message": "At least 3 points are required for a keepout outline"}
+
+            layers = params.get("layers")
+            if not layers:
+                single = params.get("layer")
+                layers = [single] if single else ["F.Cu", "In1.Cu", "In2.Cu", "B.Cu"]
+            name = params.get("name", "")
+
+            def flag(*keys, default):
+                for k in keys:
+                    if k in params:
+                        return bool(params[k])
+                return default
+
+            forbid_footprints = flag("forbidFootprints", "forbid_footprints", default=True)
+            forbid_tracks = flag("forbidTracks", "forbid_tracks", default=False)
+            forbid_vias = flag("forbidVias", "forbid_vias", default=False)
+            forbid_pads = flag("forbidPads", "forbid_pads", default=False)
+            forbid_pour = flag("forbidCopperPour", "forbid_copperpour", "forbid_copper_pour", default=False)
+
+            lset = pcbnew.LSET()
+            resolved = []
+            for lname in layers:
+                lid = self.board.GetLayerID(lname)
+                if lid is None or lid < 0:
+                    return {"success": False, "message": f"Unknown layer: {lname}"}
+                try:
+                    lset.AddLayer(lid)
+                except Exception:
+                    lset.addLayer(lid) if hasattr(lset, "addLayer") else lset.set(lid)
+                resolved.append(lname)
+
+            z = pcbnew.ZONE(self.board)
+            z.SetIsRuleArea(True)
+            z.SetLayerSet(lset)
+            if name:
+                for setter in ("SetZoneName", "SetName"):
+                    fn = getattr(z, setter, None)
+                    if fn:
+                        try:
+                            fn(name); break
+                        except Exception:
+                            pass
+
+            # Apply doNotAllow flags defensively (method names are stable across
+            # KiCad 7-10 but guard anyway so a rename can't silently no-op).
+            applied = {}
+            for key, method, val in (
+                ("footprints", "SetDoNotAllowFootprints", forbid_footprints),
+                ("tracks", "SetDoNotAllowTracks", forbid_tracks),
+                ("vias", "SetDoNotAllowVias", forbid_vias),
+                ("pads", "SetDoNotAllowPads", forbid_pads),
+                ("copperpour", "SetDoNotAllowCopperPour", forbid_pour),
+            ):
+                fn = getattr(z, method, None)
+                if fn is None:
+                    return {"success": False, "message": f"KiCad ZONE missing {method}; cannot set keepout flag '{key}'"}
+                fn(val)
+                applied[key] = val
+
+            pts = pcbnew.VECTOR_VECTOR2I()
+            for p in points:
+                pts.append(pcbnew.VECTOR2I(pcbnew.FromMM(float(p.get("x", 0))), pcbnew.FromMM(float(p.get("y", 0)))))
+            z.AddPolygon(pts)
+            self.board.Add(z)
+
+            self.board.SetModified()
+            try:
+                self.board.Save(self.board.GetFileName())
+            except Exception as e:
+                return {"success": False, "message": f"save failed: {e}"}
+
+            return {
+                "success": True,
+                "message": (
+                    f"Added keepout rule area '{name}' on {','.join(resolved)} — "
+                    f"footprints {'FORBIDDEN' if forbid_footprints else 'allowed'}, "
+                    f"vias {'forbidden' if forbid_vias else 'allowed'}, "
+                    f"tracks {'forbidden' if forbid_tracks else 'allowed'}"
+                ),
+                "saved": True,
+                "keepout": {"name": name, "layers": resolved, "forbid": applied, "pointCount": len(points)},
+                **self._backend_status(),
+            }
+        except Exception as e:
+            logger.error(f"add_keepout_zone error: {e}")
             return {"success": False, "message": str(e)}
 
     def _ipc_set_grid(self, params: Dict[str, Any]) -> Dict[str, Any]:
