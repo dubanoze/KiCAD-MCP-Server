@@ -591,6 +591,7 @@ class KiCADInterface:
             "create_netclass": self.routing_commands.create_netclass,
             "add_net_class": self._handle_add_net_class,
             "set_stackup": self._handle_set_stackup,
+            "set_impedance_control": self._handle_set_impedance_control,
             "set_zone_clearance": self._handle_set_zone_clearance,
             "add_copper_pour": self.routing_commands.add_copper_pour,
             "add_zone": self._handle_add_zone,
@@ -1610,6 +1611,68 @@ class KiCADInterface:
             "copperLayers": cu_layers,
             "approxThicknessMm": round(total, 3),
         }
+
+    def _handle_set_impedance_control(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """Toggle the stackup's (dielectric_constraints yes|no) flag in the .kicad_pcb.
+
+        This is the 'Impedance controlled' checkbox of the board stackup. Enabling
+        it marks the board for controlled impedance so the fab compensates the
+        geometry and it is exported in the fab data (IPC-2581 / gerber job). It is a
+        surgical one-token edit that PRESERVES the existing stackup dielectrics
+        (unlike set_stackup, which regenerates the whole block). Board is backed up
+        first; write refused on paren imbalance.
+
+        Params: enabled (bool, default True), boardPath (optional).
+        """
+        import re as _re, shutil as _shutil
+        enabled = params.get("enabled", True)
+        val = "yes" if enabled else "no"
+
+        board_path = self._current_board_path()
+        if not board_path:
+            hint = params.get("boardPath")
+            board_path = str(hint) if hint else None
+        if not board_path or not os.path.exists(board_path):
+            return {"success": False, "message": "Could not locate the .kicad_pcb file",
+                    "errorDetails": "Open the board (open_project) or pass boardPath"}
+        try:
+            with open(board_path, "r", encoding="utf-8") as f:
+                text = f.read()
+        except Exception as e:
+            return {"success": False, "message": "Failed to read board", "errorDetails": str(e)}
+
+        if not _re.search(r'\(stackup\b', text):
+            return {"success": False, "message": "No (stackup ...) block in the board; set the stackup first"}
+        m = _re.search(r'\(dielectric_constraints\s+(yes|no)\)', text)
+        if m:
+            prev = m.group(1)
+            new_text = text[:m.start()] + f'(dielectric_constraints {val})' + text[m.end():]
+        else:
+            # insert before the closing paren of the stackup block
+            sm = _re.search(r'\(copper_finish\s+"[^"]*"\)', text)
+            if not sm:
+                return {"success": False, "message": "Could not find an anchor (copper_finish) to insert the flag"}
+            prev = "(absent)"
+            new_text = text[:sm.end()] + f'\n\t\t\t(dielectric_constraints {val})' + text[sm.end():]
+
+        if new_text.count("(") != new_text.count(")"):
+            return {"success": False, "message": "Refusing to write: parenthesis imbalance after edit"}
+        if new_text == text:
+            return {"success": True, "message": f"dielectric_constraints already '{val}', no change",
+                    "boardPath": board_path, "previous": prev, "now": val}
+
+        bak = board_path + ".impedance.bak"
+        try:
+            _shutil.copyfile(board_path, bak)
+            with open(board_path, "w", encoding="utf-8") as f:
+                f.write(new_text)
+        except Exception as e:
+            return {"success": False, "message": "Failed to write board", "errorDetails": str(e)}
+        self._record_board_signature()
+        return {"success": True,
+                "message": f"Impedance control {'ENABLED' if enabled else 'disabled'} "
+                           f"(dielectric_constraints {prev} -> {val})",
+                "boardPath": board_path, "backup": bak, "previous": prev, "now": val}
 
     def _dirty_state(self, board_path: Optional[str]) -> Dict[str, Any]:
         """Return the best-known dirty state for the loaded board.

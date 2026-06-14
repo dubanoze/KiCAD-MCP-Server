@@ -74,6 +74,7 @@ export const toolCategories: ToolCategory[] = [
       "set_design_rules",
       "get_design_rules",
       "set_stackup",
+      "set_impedance_control",
       "run_drc",
       "add_net_class",
       "assign_net_to_class",

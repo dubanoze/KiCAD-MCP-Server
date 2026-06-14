@@ -1074,3 +1074,30 @@ without old node exit) share one .kicad_pcb. Their python backends' auto-saves
 clobber each other — a stale-state writer overwrites a correct result. Symptom:
 "Auto-save refused: disk changed externally", and on-disk geometry reverting to
 an older shape. Fix is operational: keep the board open in exactly ONE session.
+
+## 46. New tool: set_impedance_control (stackup dielectric_constraints flag)
+
+### What
+`set_impedance_control(enabled=true, boardPath?)` — toggles the board stackup's
+`(dielectric_constraints yes|no)` flag (the "Impedance controlled" checkbox) in
+the .kicad_pcb. Surgical one-token regex edit that PRESERVES the existing stackup
+dielectrics (unlike set_stackup, which regenerates the whole block and hard-codes
+`no`). Backup (.impedance.bak) + paren-balance guard.
+
+### Why
+striq RF: the 2.4GHz ANT_RF feed needs the board marked impedance-controlled so
+JLCPCB compensates the geometry to 50 ohm and it is exported in fab data. The
+existing set_stackup could only write `dielectric_constraints no` and would have
+clobbered the carefully-set 0.20mm prepreg / Er4.6 dielectrics if used to flip it.
+
+### Impl
+- python/kicad_interface.py: `_handle_set_impedance_control` + dispatch.
+  File-based text edit (no SWIG stackup API exists), mirrors set_stackup's
+  read/backup/paren-check/write pattern; records board signature after.
+- src/tools/design-rules.ts: zod schema + registration. registry.ts: listed under 'drc'.
+- Requires `npm run build` + /mcp reconnect (NEW tool -> node must re-register).
+
+### Note
+Custom DRC width rule for the RF net is authored as a project `<name>.kicad_dru`
+file (not in the .kicad_pcb/.kicad_pro protected set) — a plain text rules file
+KiCad reads at DRC time; written directly.

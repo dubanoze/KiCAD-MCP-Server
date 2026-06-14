@@ -95,6 +95,23 @@ export function registerDesignRuleTools(server: McpServer, callKicadScript: Comm
   );
 
   // ------------------------------------------------------
+  // Set Impedance Control Tool
+  // ------------------------------------------------------
+  server.tool(
+    "set_impedance_control",
+    "Toggle the board stackup 'Impedance controlled' flag (dielectric_constraints yes/no) in the .kicad_pcb. Surgical one-token edit that PRESERVES the existing stackup dielectrics. Enable it to mark the board for controlled impedance so the fab compensates and it is exported in fab data. Backs up the board; refuses on paren imbalance.",
+    {
+      enabled: z.boolean().optional().describe("true = enable impedance control (dielectric_constraints yes), false = disable. Default true."),
+      boardPath: z.string().optional().describe("Optional explicit path to the .kicad_pcb"),
+    },
+    async (params) => {
+      logger.debug("Setting impedance control flag");
+      const result = await callKicadScript("set_impedance_control", params);
+      return formatKicadResult(result);
+    },
+  );
+
+  // ------------------------------------------------------
   // Get Design Rules Tool
   // ------------------------------------------------------
   server.tool(
