@@ -1149,3 +1149,20 @@ FL1). The vertical leg is only ~1.31mm, so KiCad refused a 2mm (79mil) fillet
 with no explanation; fillet_trace reports the real ceiling (~1.0mm here) and
 lays a clean controlled-width arc — important for 2.4GHz microstrip where sharp
 90° corners cause impedance discontinuity / reflection.
+
+## 49. route_trace: robust net resolution (GetNetItem, not NetsByName)
+
+### What
+`commands/routing.py route_trace` resolved the net via
+`board.GetNetInfo().NetsByName()` + `nets_map.has_key(net)`. On some KiCad 10
+SWIG builds `NetsByName()` returns a proxy whose `.has_key()` either raises
+`'SwigPyObject' object has no attribute 'NetsByName'` (dehydrated board) or
+hard-crashes the Python backend (segfault on a freshly-rehydrated board).
+Switched to `GetNetInfo().GetNetItem(net)` — the same direct lookup that
+`modify_trace` and `fillet_trace` already use successfully — and return a clean
+"Invalid net" error instead of crashing when the net is missing.
+
+### Why
+striq: rerouting the HSE crystal net X32MO (delete_trace + 5x route_trace) hard-
+crashed the backend on every route_trace until the net lookup was changed. With
+GetNetItem the same 5 segments routed first-try in SWIG mode.

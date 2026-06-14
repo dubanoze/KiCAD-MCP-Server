@@ -298,13 +298,19 @@ class RoutingCommands:
             else:
                 track.SetWidth(self.board.GetDesignSettings().GetCurrentTrackWidth())
 
-            # Set net if provided
+            # Set net if provided. Use GetNetItem (robust) rather than
+            # NetsByName().has_key(), which dehydrates / hard-crashes the SWIG
+            # board proxy on some KiCad 10 builds. Mirrors modify_trace /
+            # fillet_trace net resolution (PATCHES 49).
             if net:
-                netinfo = self.board.GetNetInfo()
-                nets_map = netinfo.NetsByName()
-                if nets_map.has_key(net):
-                    net_obj = nets_map[net]
-                    track.SetNet(net_obj)
+                net_obj = self.board.GetNetInfo().GetNetItem(net)
+                if net_obj is None:
+                    return {
+                        "success": False,
+                        "message": "Invalid net",
+                        "errorDetails": f"Net '{net}' not found",
+                    }
+                track.SetNet(net_obj)
 
             # Add track to board
             self.board.Add(track)
