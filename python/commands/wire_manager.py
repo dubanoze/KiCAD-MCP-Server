@@ -571,8 +571,13 @@ class WireManager:
             if not (root_uuid and sheet_uuid):
                 logger.error("Could not resolve root/sheet uuid for subsheet instances")
                 return -1
-            # discover project name from any existing striq-style instance in the root tree
-            proj_name = "striq"  # default; overridden below if a different one is found
+            # Project name = the .kicad_pro stem next to the root (what real eeschema writes).
+            # Must NOT be hard-coded — a wrong name breaks hierarchy resolution on any other
+            # project. Fall back to the root schematic's stem if no .kicad_pro is present.
+            proj_name = next(
+                (p.stem for p in sorted(Path(root_path).parent.glob("*.kicad_pro"))),
+                Path(root_path).stem,
+            )
             hier_path = f"/{root_uuid}/{sheet_uuid}"
 
             sch = sexpdata.loads(Path(subsheet_path).read_text(encoding="utf-8"))
@@ -1432,6 +1437,77 @@ class WireManager:
             return True
         except Exception as e:
             logger.error(f"Error setting pin type: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return False
+
+    @staticmethod
+    def set_component_dnp(
+        schematic_path: Path,
+        reference: str,
+        dnp: bool = True,
+        in_bom: Optional[bool] = None,
+    ) -> bool:
+        """Set the DNP (Do Not Populate) attribute of a placed symbol.
+
+        Finds the top-level placed (symbol ...) block whose (property "Reference")
+        matches `reference` and rewrites its (dnp yes|no) token; inserts the token
+        after (on_board ...) when the symbol predates the attribute. Optionally
+        also rewrites (in_bom yes|no) — KiCad convention keeps DNP parts in the
+        BOM unless explicitly excluded, so in_bom is left untouched by default.
+        """
+        try:
+            with open(schematic_path, "r", encoding="utf-8") as f:
+                sch_data = sexpdata.loads(f.read())
+
+            sym_s = Symbol("symbol")
+            prop_s = Symbol("property")
+            dnp_s = Symbol("dnp")
+            in_bom_s = Symbol("in_bom")
+            on_board_s = Symbol("on_board")
+            yes_s, no_s = Symbol("yes"), Symbol("no")
+
+            def _set_token(block: list, key: Symbol, val: bool) -> None:
+                for ch in block:
+                    if isinstance(ch, list) and ch and ch[0] == key:
+                        ch[1] = yes_s if val else no_s
+                        return
+                # token absent (old-format symbol) — insert after (on_board ...)
+                idx = None
+                for i, ch in enumerate(block):
+                    if isinstance(ch, list) and ch and ch[0] == on_board_s:
+                        idx = i + 1
+                        break
+                entry = [key, yes_s if val else no_s]
+                block.insert(idx if idx is not None else len(block), entry)
+
+            changed = False
+            for it in sch_data:
+                if not (isinstance(it, list) and it and it[0] == sym_s):
+                    continue
+                ref = None
+                for ch in it:
+                    if (isinstance(ch, list) and ch and ch[0] == prop_s
+                            and len(ch) >= 3 and str(ch[1]) == "Reference"):
+                        ref = str(ch[2])
+                        break
+                if ref != reference:
+                    continue
+                _set_token(it, dnp_s, dnp)
+                if in_bom is not None:
+                    _set_token(it, in_bom_s, in_bom)
+                changed = True
+
+            if not changed:
+                logger.error(f"Component '{reference}' not found in {schematic_path}")
+                return False
+
+            with open(schematic_path, "w", encoding="utf-8") as f:
+                f.write(sexpdata.dumps(sch_data))
+            logger.info(f"Set DNP={dnp} on {reference} in {schematic_path}")
+            return True
+        except Exception as e:
+            logger.error(f"Error setting DNP: {e}")
             import traceback
             logger.error(traceback.format_exc())
             return False

@@ -526,6 +526,79 @@ class DynamicSymbolLoader:
         ry = -dx * math.sin(rad) + dy * math.cos(rad)
         return round(rx, 3), round(ry, 3)
 
+    def _read_top_uuid(self, path: Path) -> str:
+        """Return the first top-level (uuid ...) of a .kicad_sch — i.e. that sheet's own UUID."""
+        try:
+            head = Path(path).read_text(encoding="utf-8")[:4000]
+        except Exception:
+            return ""
+        m = re.search(r'\(kicad_sch\b.*?\(uuid\s+"?([0-9a-fA-F-]{36})"?', head, re.DOTALL)
+        return m.group(1) if m else ""
+
+    def _find_sheet_uuid(self, root_path: Path, subsheet_filename: str) -> str:
+        """UUID of the (sheet ...) object on the root whose Sheetfile == subsheet_filename.
+
+        Read-only sexpdata parse of the ROOT file only — it never rewrites it, so the
+        module's "no sexpdata writes" rule (which exists to preserve formatting) is honoured.
+        """
+        try:
+            import sexpdata
+            root = sexpdata.loads(Path(root_path).read_text(encoding="utf-8"))
+        except Exception:
+            return ""
+        for it in root:
+            if not (isinstance(it, list) and it and str(it[0]) == "sheet"):
+                continue
+            sf = next((str(e[2]) for e in it if isinstance(e, list) and str(e[0]) == "property"
+                       and len(e) >= 3 and str(e[1]) == "Sheetfile"), None)
+            if sf == subsheet_filename:
+                return next((str(e[1]) for e in it if isinstance(e, list)
+                             and str(e[0]) == "uuid"), "") or ""
+        return ""
+
+    def _resolve_instance_context(self, schematic_path: Path) -> Tuple[str, str]:
+        """Resolve (project_name, instance_path) for a symbol placed on `schematic_path`.
+
+        instance_path is a valid hierarchical KIID_PATH and is **never** a bare "/": a bare
+        "/" makes KiCad 10's serializer dereference null in KIID::operator< and SEGFAULT,
+        truncating the .kicad_sch to 0 bytes on save/upgrade.
+            * root sheet:  "/<root-sheet-uuid>"
+            * sub-sheet:   "/<root-sheet-uuid>/<sheet-object-uuid>"
+        project_name is the .kicad_pro stem (what real eeschema writes), not the "project"
+        placeholder.
+        """
+        schematic_path = Path(schematic_path)
+        own_uuid = self._read_top_uuid(schematic_path)
+
+        # Locate the project (.kicad_pro) and the root schematic next to it. self.project_path
+        # is set by add_component() to the directory that owns the project.
+        folder = Path(self.project_path) if self.project_path else schematic_path.parent
+        pros = sorted(folder.glob("*.kicad_pro"))
+        proj_name = pros[0].stem if pros else schematic_path.stem
+        root_path = folder / f"{proj_name}.kicad_sch"
+        if not root_path.exists():
+            root_path = schematic_path  # treat the current file as its own root
+
+        try:
+            is_root = root_path.resolve() == schematic_path.resolve()
+        except Exception:
+            is_root = root_path.name == schematic_path.name
+
+        if is_root:
+            path = f"/{own_uuid}" if own_uuid else ""
+        else:
+            root_uuid = self._read_top_uuid(root_path)
+            sheet_uuid = self._find_sheet_uuid(root_path, schematic_path.name)
+            if root_uuid and sheet_uuid:
+                path = f"/{root_uuid}/{sheet_uuid}"
+            elif own_uuid:
+                path = f"/{own_uuid}"  # hierarchically imperfect but repairable — never segfaults
+            else:
+                path = ""
+        if not path:                       # absolute last resort: synthetic yet valid KIID_PATH
+            path = f"/{uuid.uuid4()}"
+        return proj_name, path
+
     def create_component_instance(
         self,
         schematic_path: Path,
@@ -577,20 +650,12 @@ class DynamicSymbolLoader:
         fp_x,  fp_y,  _,     _       = _prop_at("Footprint",  0,     0,    0)
         ds_x,  ds_y,  _,     _       = _prop_at("Datasheet",  0,     0,    0)
 
-        # Determine the schematic's own root UUID for the symbol instance path.
-        # KiCad expects the instance path to be "/<root-sheet-uuid>" (a valid KIID_PATH).
-        # Writing a bare "/" produces a malformed KIID_PATH that SEGFAULTS KiCad's
-        # serializer in KIID::operator< when it saves/upgrades the schematic.
-        root_uuid = ""
-        try:
-            with open(schematic_path, "r", encoding="utf-8") as _f:
-                _head = _f.read(2000)
-            _m = re.search(r'\(kicad_sch\b.*?\(uuid\s+"?([0-9a-fA-F-]{36})"?', _head, re.DOTALL)
-            if _m:
-                root_uuid = _m.group(1)
-        except Exception:
-            root_uuid = ""
-        instance_path = f"/{root_uuid}" if root_uuid else "/"
+        # Resolve the real project name and a valid hierarchical instance path.
+        # A bare "/" here SEGFAULTS KiCad 10's serializer (KIID::operator<) and zeroes the
+        # file on save/upgrade; for sub-sheets the path must be "/<root-uuid>/<sheet-uuid>",
+        # not the sub-sheet's own uuid. _resolve_instance_context() guarantees both and never
+        # returns a bare "/".
+        project_name, instance_path = self._resolve_instance_context(schematic_path)
 
         mirror_str = " (mirror y)" if mirror_y else ""
         instance_block = f"""  (symbol (lib_id "{full_lib_id}") (at {x} {y} {angle}){mirror_str} (unit {unit})
@@ -609,7 +674,7 @@ class DynamicSymbolLoader:
       (effects (font (size 1.27 1.27)) (hide yes))
     )
     (instances
-      (project "project"
+      (project "{project_name}"
         (path "{instance_path}"
           (reference "{reference}")
           (unit {unit})
