@@ -1382,3 +1382,27 @@ hierarchy. Docstring already promised "no sheet pins". Fix: after deepcopy, drop
 all `(pin ...)` children so a new sub-sheet starts empty; pins added later via
 add_sheet_pin. Verified: new MCU sheet has 0 pins, netlist intact (113 nets),
 kicad-cli upgrade canary OK.
+
+## #56 — move_components_to_sheet: cross-sheet component relocation (NEW tool)
+
+Refactor a flat root schematic into a clean container with components on sub-sheets.
+Relocates component instances + the net labels / power symbols attached to their pins from
+a source sheet to a target sheet; copies any missing lib_symbols into the target; repairs
+hierarchical instance paths (reuses repair_subsheet_instances) so kicad-cli emits the moved
+pins. Nets entirely WITHIN the moved set stay intact (their labels move too); CROSS-sheet
+signals become local on the target and must be re-exposed by the caller (hierarchical
+labels + sheet pins + root nets).
+
+Files: python/commands/wire_manager.py (move_components_to_sheet),
+python/kicad_interface.py (_handle_move_components_to_sheet + dispatch),
+src/tools/schematic.ts (tool def) + dist/tools/schematic.js (tsc build).
+
+Validated offline with KiCad's python on SER2RJ45: moved 22 MCU-domain components
+(U1 + crystals + decoupling + PHY power) root -> MCU sub-sheet; root emptied to a pure
+sheet container (0 direct symbols). 45 symbols (incl. #PWR) + 63 labels relocated; intra-
+group nets intact on the sub-sheet (HSE_IN={C13,U1.5,Y1.1}, LSE, BOOT0={R2.1,U1.63},
+NRST={C12,R1.2,SW1.1,U1.7}); power crosses via globals (+3V3 37 nodes / GND 62); U1
+instance path /<root>/<sheet>; kicad-cli upgrade canary SAVEABLE.
+
+NOTE: a NEW tool — the MCP (Node) server must be RESTARTED to advertise it to clients
+(hot-reload covers only python command handlers, not the TS tool registry).

@@ -1396,6 +1396,40 @@ edit_schematic_component and set its value to an empty string.`,
     },
   );
 
+  // Set the DNP (Do Not Populate) attribute of a placed symbol
+  server.tool(
+    "set_component_dnp",
+    "Set the DNP (Do Not Populate) attribute of a placed schematic symbol. DNP parts keep their " +
+      "footprint on the board (placement option / tuning insurance) but are excluded from assembly. " +
+      "Optionally also set the in_bom attribute (by default BOM membership is left unchanged).",
+    {
+      schematicPath: z.string().describe("Path to the .kicad_sch file"),
+      reference: z.string().describe("Reference designator of the component (e.g. C7, XM7)"),
+      dnp: z.boolean().optional().describe("DNP state to set (default: true)"),
+      inBom: z
+        .boolean()
+        .optional()
+        .describe("Optionally set the in_bom attribute too (omit to leave unchanged)"),
+    },
+    async (args: {
+      schematicPath: string;
+      reference: string;
+      dnp?: boolean;
+      inBom?: boolean;
+    }) => {
+      const result = await callKicadScript("set_component_dnp", args);
+      return {
+        content: [
+          {
+            type: "text",
+            text: result.message || (result.success ? "DNP updated" : "Failed"),
+          },
+        ],
+        isError: !result.success,
+      };
+    },
+  );
+
   // Create a hierarchical sub-sheet + add its sheet symbol on the root
   server.tool(
     "add_hierarchical_sheet",
@@ -1457,6 +1491,45 @@ edit_schematic_component and set its value to an empty string.`,
       return {
         content: [
           { type: "text", text: result.message || (result.success ? "Repaired" : "Failed") },
+        ],
+        isError: !result.success,
+      };
+    },
+  );
+
+  // Relocate components (and their attached labels / power symbols) between sheets
+  server.tool(
+    "move_components_to_sheet",
+    "Relocate a set of component instances — and the net labels / power symbols attached to " +
+      "their pins — from one sheet to another. Copies any missing lib_symbols into the target and " +
+      "repairs hierarchical instance paths (so kicad-cli emits the moved pins). Nets entirely " +
+      "within the moved set stay intact (their labels move too); CROSS-sheet signals become local " +
+      "on the target and must be re-exposed by the caller (hierarchical labels + sheet pins + root " +
+      "nets). Use to refactor a flat root into a clean container with components on sub-sheets.",
+    {
+      rootPath: z.string().describe("Path to the parent/root .kicad_sch"),
+      sourcePath: z.string().describe("Path to the source .kicad_sch the components currently live on"),
+      targetPath: z.string().describe("Path to the target sub-sheet .kicad_sch to move them onto"),
+      references: z
+        .array(z.string())
+        .describe("Reference designators to move (e.g. ['U1','Y1','C13'])"),
+    },
+    async (args: {
+      rootPath: string;
+      sourcePath: string;
+      targetPath: string;
+      references: string[];
+    }) => {
+      const result = await callKicadScript("move_components_to_sheet", args);
+      return {
+        content: [
+          {
+            type: "text",
+            text: result.success
+              ? `Moved ${result.moved_symbols} symbols + ${result.moved_labels} labels; ` +
+                `${result.instances_repaired} instance paths repaired`
+              : result.message || "Failed",
+          },
         ],
         isError: !result.success,
       };

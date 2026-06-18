@@ -682,6 +682,7 @@ class KiCADInterface:
             "add_schematic_rectangle": self._handle_add_schematic_rectangle,
             "add_hierarchical_sheet": self._handle_add_hierarchical_sheet,
             "repair_subsheet_instances": self._handle_repair_subsheet_instances,
+            "move_components_to_sheet": self._handle_move_components_to_sheet,
             "add_schematic_polyline": self._handle_add_schematic_polyline,
             "delete_schematic_shape": self._handle_delete_schematic_shape,
             "export_schematic_pdf": self._handle_export_schematic_pdf,
@@ -689,6 +690,7 @@ class KiCADInterface:
             # Schematic analysis tools (read-only)
             "get_schematic_view_region": self._handle_get_schematic_view_region,
             "find_overlapping_elements": self._handle_find_overlapping_elements,
+            "auto_resolve_field_overlaps": self._handle_auto_resolve_field_overlaps,
             "get_elements_in_region": self._handle_get_elements_in_region,
             "find_wires_crossing_symbols": self._handle_find_wires_crossing_symbols,
             "find_orphaned_wires": self._handle_find_orphaned_wires,
@@ -3762,6 +3764,27 @@ class KiCADInterface:
             logger.error(f"Error repairing subsheet instances: {e}")
             return {"success": False, "message": str(e), "errorDetails": traceback.format_exc()}
 
+    def _handle_move_components_to_sheet(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """Relocate components (+ their attached labels / power symbols) between sheets."""
+        try:
+            from commands.wire_manager import WireManager
+
+            root_path = params.get("rootPath")
+            source_path = params.get("sourcePath")
+            target_path = params.get("targetPath")
+            references = params.get("references")
+            if not all([root_path, source_path, target_path]) or not references:
+                return {"success": False,
+                        "message": "rootPath, sourcePath, targetPath and references are required"}
+            if not isinstance(references, list):
+                return {"success": False, "message": "references must be a list of reference designators"}
+            return WireManager.move_components_to_sheet(root_path, source_path, target_path, references)
+        except Exception as e:
+            import traceback
+
+            logger.error(f"Error moving components to sheet: {e}")
+            return {"success": False, "message": str(e), "errorDetails": traceback.format_exc()}
+
     def _handle_add_schematic_rectangle(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """Add a graphic rectangle (block-diagram box) to the schematic."""
         try:
@@ -6242,6 +6265,86 @@ class KiCADInterface:
             }
         except Exception as e:
             logger.error(f"Error finding overlapping elements: {e}")
+            import traceback
+
+            logger.error(traceback.format_exc())
+            return {"success": False, "message": str(e)}
+
+    def _handle_auto_resolve_field_overlaps(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """Plan and APPLY connectivity-safe fixes for field/label text overlaps.
+
+        Repeatedly: plan moves (move component Reference/Value fields to the side
+        of their symbol; flip net-label justify outward) and apply them via the
+        existing edit_schematic_component / set_schematic_label_orientation paths.
+        Only field positions and label justify change — wires, pins, net names and
+        instances are untouched, so connectivity is preserved. [patch: SER2RJ45]
+        """
+        logger.info("Auto-resolving field/label text overlaps")
+        try:
+            from pathlib import Path
+
+            from commands.schematic_analysis import find_overlapping_elements, plan_field_deconflict
+
+            schematic_path = params.get("schematicPath")
+            if not schematic_path or not os.path.exists(schematic_path):
+                return {"success": False, "message": f"Schematic not found: {schematic_path}"}
+            dry_run = bool(params.get("dryRun", False))
+            max_rounds = int(params.get("maxRounds", 3))
+
+            before = find_overlapping_elements(Path(schematic_path))["totalOverlaps"]
+            applied_fields = 0
+            applied_flips = 0
+            rounds = 0
+            for _ in range(max_rounds):
+                plan = plan_field_deconflict(Path(schematic_path))
+                if not plan["fieldMoves"] and not plan["labelFlips"]:
+                    break
+                if dry_run:
+                    return {
+                        "success": True, "dryRun": True,
+                        "plannedFieldMoves": plan["fieldMoves"], "plannedLabelFlips": plan["labelFlips"],
+                        "textOverlapsBefore": plan["before"], "textOverlapsAfterPlan": plan["after"],
+                        "message": f"Would move {len(plan['fieldMoves'])} field(s), flip {len(plan['labelFlips'])} label(s)",
+                    }
+                rounds += 1
+                round_applied = 0
+                for m in plan["fieldMoves"]:
+                    r = self._handle_edit_schematic_component({
+                        "schematicPath": schematic_path,
+                        "reference": m["reference"],
+                        "fieldPositions": {m["field"]: {"x": m["x"], "y": m["y"], "justify": m["justify"]}},
+                    })
+                    if r.get("success"):
+                        applied_fields += 1
+                        round_applied += 1
+                for f in plan["labelFlips"]:
+                    r = self._handle_set_schematic_label_orientation({
+                        "schematicPath": schematic_path,
+                        "netName": f["netName"],
+                        "position": {"x": f["x"], "y": f["y"]},
+                        "justify": f["justify"],
+                    })
+                    if r.get("success"):
+                        applied_flips += 1
+                        round_applied += 1
+                if round_applied == 0:
+                    break
+
+            final = find_overlapping_elements(Path(schematic_path))
+            return {
+                "success": True,
+                "overlapsBefore": before,
+                "overlapsAfter": final["totalOverlaps"],
+                "textOverlapsAfter": len(final["overlappingText"]),
+                "symbolOverlapsAfter": len(final["overlappingSymbols"]),
+                "appliedFieldMoves": applied_fields,
+                "appliedLabelFlips": applied_flips,
+                "rounds": rounds,
+                "message": f"Overlaps {before} -> {final['totalOverlaps']} "
+                           f"({applied_fields} field move(s), {applied_flips} label flip(s))",
+            }
+        except Exception as e:
+            logger.error(f"Error auto-resolving field overlaps: {e}")
             import traceback
 
             logger.error(traceback.format_exc())

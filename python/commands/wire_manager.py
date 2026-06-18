@@ -685,6 +685,111 @@ class WireManager:
             return -1
 
     @staticmethod
+    def move_components_to_sheet(root_path, source_path, target_path, references) -> dict:
+        """[SER2RJ45 #56] Relocate component instances (and the net labels / power
+        symbols attached to their pins) from source sheet to target sheet.
+
+        - Copies any missing lib_symbols defs into the target.
+        - Repairs hierarchical instance paths on the target (calls
+          repair_subsheet_instances) so kicad-cli emits the moved pins.
+        NOTE: nets entirely WITHIN the moved set stay intact (their labels move
+        too). CROSS-sheet signals become local on the target and must be
+        re-exposed by the caller (hierarchical labels + sheet pins + root nets).
+        """
+        try:
+            from commands.pin_locator import PinLocator
+
+            refs = set(references)
+            src = sexpdata.loads(Path(source_path).read_text(encoding="utf-8"))
+            dst = sexpdata.loads(Path(target_path).read_text(encoding="utf-8"))
+
+            def _ref(node):
+                return next((str(e[2]) for e in node if isinstance(e, list) and len(e) >= 3
+                             and str(e[0]) == "property" and str(e[1]) == "Reference"), None)
+
+            def _libid(node):
+                return next((str(e[1]) for e in node if isinstance(e, list) and str(e[0]) == "lib_id"), None)
+
+            def _at(node):
+                a = next((e for e in node if isinstance(e, list) and str(e[0]) == "at"), None)
+                return (round(float(a[1]), 2), round(float(a[2]), 2)) if a else None
+
+            # 1) pin endpoints of the moved components (to capture attached labels)
+            loc = PinLocator()
+            pin_xy = set()
+            for r in refs:
+                for xy in loc.get_all_symbol_pins(Path(source_path), r).values():
+                    pin_xy.add((round(float(xy[0]), 2), round(float(xy[1]), 2)))
+
+            symsym = Symbol("symbol")
+            moved, moved_libs, kept = [], set(), []
+            for it in src:
+                if isinstance(it, list) and it and it[0] == symsym and _ref(it) in refs:
+                    moved.append(it)
+                    lid = _libid(it)
+                    if lid:
+                        moved_libs.add(lid)
+                else:
+                    kept.append(it)
+            # labels / power-symbols sitting on the moved pins move too
+            kept2 = []
+            for it in kept:
+                take = False
+                if isinstance(it, list) and it:
+                    h = str(it[0])
+                    if h in ("label", "global_label", "hierarchical_label") and _at(it) in pin_xy:
+                        take = True
+                    elif h == "symbol":
+                        r = _ref(it)
+                        if r and r.startswith("#") and _at(it) in pin_xy:
+                            take = True
+                            lid = _libid(it)
+                            if lid:
+                                moved_libs.add(lid)
+                if take:
+                    moved.append(it)
+                else:
+                    kept2.append(it)
+
+            # 2) copy any missing lib_symbols defs into the target
+            def _libsec(tree):
+                return next((e for e in tree if isinstance(e, list) and e and str(e[0]) == "lib_symbols"), None)
+            src_lib, dst_lib = _libsec(kept2), _libsec(dst)
+            if dst_lib is None:
+                dst_lib = [Symbol("lib_symbols")]
+                dst.insert(1, dst_lib)
+            have = {str(e[1]) for e in dst_lib[1:] if isinstance(e, list) and str(e[0]) == "symbol"}
+            if src_lib is not None:
+                for e in src_lib[1:]:
+                    if isinstance(e, list) and str(e[0]) == "symbol" and str(e[1]) in moved_libs and str(e[1]) not in have:
+                        dst_lib.append(e)
+
+            # 3) insert moved instances+labels into the target (before sheet_instances)
+            ins = len(dst)
+            for i, e in enumerate(dst):
+                if isinstance(e, list) and e and str(e[0]) == "sheet_instances":
+                    ins = i
+                    break
+            for m in moved:
+                dst.insert(ins, m)
+                ins += 1
+
+            Path(source_path).write_text(sexpdata.dumps(kept2), encoding="utf-8")
+            Path(target_path).write_text(sexpdata.dumps(dst), encoding="utf-8")
+
+            # 4) repair hierarchical instance paths on the target
+            fixed = WireManager.repair_subsheet_instances(Path(target_path), Path(root_path))
+            n_sym = sum(1 for m in moved if isinstance(m, list) and m and m[0] == symsym)
+            n_lbl = sum(1 for m in moved if isinstance(m, list) and m and str(m[0]) in
+                        ("label", "global_label", "hierarchical_label"))
+            return {"success": True, "moved_symbols": n_sym, "moved_labels": n_lbl,
+                    "instances_repaired": fixed}
+        except Exception as e:
+            import traceback
+            logger.error(traceback.format_exc())
+            return {"success": False, "message": str(e)}
+
+    @staticmethod
     def add_polyline(
         schematic_path: Path,
         points: List[List[float]],
