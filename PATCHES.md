@@ -1238,3 +1238,147 @@ hard-codes would have produced wrong-project instance paths.
   symbol path `/<root>/<sheet>`, project name = `.kicad_pro` stem, no bare `/`;
   `kicad-cli sch upgrade --force` exits 0 on both, files intact.
 - Python-only change → no `npm run build`; `/mcp` reconnect to load it.
+
+---
+
+## 52. `add_hierarchical_sheet`: subfolder Sheetfile + duplicate page number
+
+**Added:** 2026-06-17
+**Status:** ✅ local patch (tag `SER2RJ45`); candidate for upstream PR
+**File:** `python/commands/wire_manager.py`
+**Tests:** `tests/test_add_hierarchical_sheet.py` — 4 tests, all pass; existing
+`test_hierarchy_tools.py` / `test_add_wire_sub_sheet.py` (33) still pass.
+
+### What
+Two fixes in `WireManager.add_hierarchical_sheet` (+ one in
+`repair_subsheet_instances`):
+
+1. **Sheetfile is now relative to the root's directory, not the bare basename.**
+   `sheet_file_rel = os.path.relpath(subsheet_path, root.parent)` (POSIX slashes).
+   Previously `Path(subsheet_path).name` → a subsheet in `Sheets/` was written as
+   `(property "Sheetfile" "Foo.kicad_sch")`, so KiCad could not find it and the
+   sheet rendered **empty** in the hierarchy. `repair_subsheet_instances` now
+   matches Sheetfile by **basename** so it still resolves the sheet.
+
+2. **The new sheet gets a unique page number.** The `(sheet)` symbol is
+   `deepcopy`'d from an existing one, so it inherited that sheet's
+   `(instances … (page "N"))` verbatim → two sheets claimed the same page.
+   Now: `page = max(existing sheet pages) + 1`.
+
+### Why
+On SER2RJ45 (hierarchical project, subsheets in `Sheets/`): adding an `Overview`
+sheet produced `Sheetfile "Overview.kicad_sch"` (no `Sheets/` prefix) → the page
+rendered blank until the root was hand-fixed; and the new sheet was assigned the
+same page number as `Power` (both "2"). Both are creation-time defects that every
+hierarchical project hits.
+
+### Verify
+- `tests/test_add_hierarchical_sheet.py`:
+  `python -m pytest tests/test_add_hierarchical_sheet.py -o addopts=""` → 4 passed.
+- Manual: add a sheet whose file is in a subfolder → root gets
+  `"Sheetfile" "Sheets/<name>.kicad_sch"` and a page number not used by any
+  sibling sheet.
+- Python-only change → no `npm run build`; `/mcp` reconnect to load it.
+
+---
+
+## 53. `find_overlapping_elements`: detect overlapping field/label TEXT
+
+**Added:** 2026-06-17
+**Status:** ✅ local patch (tag `SER2RJ45`); candidate for upstream PR
+**File:** `python/commands/schematic_analysis.py`
+**Tests:** `tests/test_text_overlap_detection.py` — 4 tests, all pass; full
+schematic-analysis/hierarchy suite (121) still passes.
+
+### What
+`find_overlapping_elements` previously only checked symbol bounding boxes,
+label ANCHOR proximity, and wire collinearity — it never looked at the visible
+TEXT of reference/value fields, labels, or notes. So it reported `0 overlaps`
+on sheets whose refdes/value text and net labels are clearly printed on top of
+each other (the dominant readability problem on auto-generated schematics).
+
+Added `_parse_visible_text()` (refdes/value fields unless hidden, label /
+global_label / hierarchical_label, graphic `text`) with an approximate
+stroke-font bbox (`_text_bbox`, ~0.72*size/glyph) that **honors horizontal
+justify** (left/right text extends the correct way; center is the default), and
+a new pairwise AABB check. Honoring justify matters: flipping a net label's
+justify outward (the standard fix for two labels meeting at a symbol) genuinely
+separates them, and the detector now reflects that instead of false-flagging. Two fields of the SAME symbol (Reference next to its Value)
+share an `owner` and are excluded. Result now includes `overlappingText[]` and
+counts it in `totalOverlaps`.
+
+### Why
+On SER2RJ45 the tool returned 0 on visibly-messy sheets, so it could not drive
+layout QA. With the fix it reports the real counts (LED 17, Power 49,
+Ethernet 44, Serial 60, MCU-root 98 text/symbol overlaps) — a usable signal to
+minimize while tidying with `move_schematic_component` /
+`normalize_schematic_label_justify`.
+
+Also refined the SYMBOL overlap check: `_compute_symbol_bbox_direct(..,
+body_only=True)` compares the drawn body rectangles (graphics only, pins
+excluded) instead of the pin-extended bbox. This kills the false positives
+where a part sitting next to a chip's pin, or a power symbol on a pin, read as
+"overlapping" — e.g. Ethernet symbol overlaps 6→0, Power 7→2, Serial 20→4,
+leaving only genuinely-stacked symbols (two #PWR at d=0.9, caps 2.5 mm apart).
+
+### Verify
+- `python -m pytest tests/test_text_overlap_detection.py -o addopts=""` → 5 passed
+  (overlap detected; same-symbol pair excluded; hidden field ignored; justify
+  separation; well-spaced clean).
+- Read-only, additive output key → backward compatible.
+- Python-only change → no `npm run build`; `/mcp` reconnect to load it.
+
+---
+
+## 54. New tool: `auto_resolve_field_overlaps` (tidy schematic text)
+
+**Added:** 2026-06-17
+**Status:** ✅ local patch (tag `SER2RJ45`); candidate for upstream PR
+**Files:** `python/commands/schematic_analysis.py` (`plan_field_deconflict`),
+`python/kicad_interface.py` (`_handle_auto_resolve_field_overlaps` + dispatch),
+`python/schemas/tool_schemas.py` (schema). **TS layer not yet wired** — callable
+from Python/handler now; add to `src/tools/schematic.ts` + `npm run build` to
+expose over MCP stdio.
+
+### What
+Connectivity-safe auto-tidy for the dominant readability problem on generated
+sheets: reference/value field text and net labels printed on top of each other.
+`plan_field_deconflict` (read-only) iteratively plans two safe operations —
+move a component Reference/Value FIELD to the side of its symbol, and flip a net
+label's horizontal justify outward — simulating with the justify-aware bbox until
+no field/label text overlaps remain. The handler applies the plan via the
+existing `edit_schematic_component` (field positions) and
+`set_schematic_label_orientation` (justify) paths, so wires/pins/net-names/
+instances are never touched. Supports `dryRun` and `maxRounds`.
+
+### Why
+SER2RJ45 sheets had 40–60 text overlaps each from dense auto-placement. Manual
+per-field moves would be 150+ tool calls. This resolves a whole sheet in one
+call. Live results (text overlaps): LED 17→0, Power 41→0, Ethernet 37→0,
+Serial 41→0; full netlist unchanged at 379 components; format 20260306 preserved.
+
+### Limitations / next
+- Handles field↔label / field↔field TEXT overlaps. It does NOT move components
+  (symbol-body overlaps) or relocate dense clusters — those need
+  `move_schematic_component`.
+- `find_overlapping_elements` symbol-overlap check still over-reports power
+  symbols sitting on a pin and small parts within a large chip's bbox; refining
+  that (exclude pin-attached power symbols; body-rectangle vs full bbox) is a
+  good follow-up so the symbol metric is as trustworthy as the text metric.
+
+### Verify
+- `dryRun` returns the planned moves; applied run reports `overlapsBefore/After`.
+- Python-only change → no `npm run build` for the Python path; `/mcp` reconnect
+  to load. Full MCP-stdio exposure needs the TS registration + build.
+
+## #55 — add_hierarchical_sheet: strip cloned sheet pins (wire_manager.py)
+
+`add_hierarchical_sheet` deep-copies an existing (sheet ...) symbol from the root
+as a format template, then rewrites name/file/uuid/size/page. But it left the
+template's inherited `(pin ...)` entries in place — the clone of another sub-sheet
+carried that sheet's pins at their original fixed coordinates, so the new sheet
+got duplicate/overlapping sheet pins (e.g. USART_RX at (70,180)) → corrupted
+hierarchy. Docstring already promised "no sheet pins". Fix: after deepcopy, drop
+all `(pin ...)` children so a new sub-sheet starts empty; pins added later via
+add_sheet_pin. Verified: new MCU sheet has 0 pins, netlist intact (113 nets),
+kicad-cli upgrade canary OK.

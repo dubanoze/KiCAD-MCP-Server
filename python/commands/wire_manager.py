@@ -8,6 +8,7 @@ manipulate the .kicad_sch file directly.
 
 import logging
 import math
+import os
 import re
 import tempfile
 import uuid
@@ -468,6 +469,16 @@ class WireManager:
             sheet_uuid = sheet_uuid or str(uuid.uuid4())
             subsheet_uuid = subsheet_uuid or str(uuid.uuid4())
             sheet_file = Path(subsheet_path).name
+            # Sheetfile must be RELATIVE TO THE ROOT'S DIRECTORY, not just the
+            # basename. A subsheet in a subfolder (e.g. Sheets/Foo.kicad_sch) was
+            # written as "Foo.kicad_sch", so KiCad could not locate it and the
+            # sheet rendered empty / broke the hierarchy. [patch: SER2RJ45]
+            try:
+                sheet_file_rel = os.path.relpath(
+                    str(subsheet_path), str(Path(root_path).parent)
+                ).replace(os.sep, "/")
+            except ValueError:
+                sheet_file_rel = sheet_file
 
             # 1) Author the subsheet file (minimal valid; standalone page 1).
             if not Path(subsheet_path).exists():
@@ -495,6 +506,17 @@ class WireManager:
                 return {"success": False, "message": "No existing (sheet) to use as template"}
             new_sheet = _copy.deepcopy(template)
 
+            # [patch: SER2RJ45] Strip the template's inherited sheet pins. The
+            # cloned template is ANOTHER sub-sheet whose (pin ...) entries sit at
+            # fixed coordinates; leaving them on the new sheet creates duplicate/
+            # overlapping sheet pins that corrupt the netlist (0 nets). A new
+            # sub-sheet must start with NO pins (docstring: connectivity via
+            # global labels / pins added explicitly afterwards via add_sheet_pin).
+            new_sheet[:] = [
+                e for e in new_sheet
+                if not (isinstance(e, list) and e and str(e[0]) == "pin")
+            ]
+
             def _set_at(node, nx, ny):
                 at = next((p for p in node if isinstance(p, list) and p and str(p[0]) == "at"), None)
                 if at is not None:
@@ -514,8 +536,39 @@ class WireManager:
                         e[2] = sheet_name
                         _set_at(e, x, y - 0.8)
                     elif str(e[1]) == "Sheetfile":
-                        e[2] = sheet_file
+                        e[2] = sheet_file_rel
                         _set_at(e, x, y + float(h) + 0.5)
+
+            # Give the new sheet a UNIQUE page number. The template sheet was
+            # deep-copied, so its (instances ... (page "N")) was inherited verbatim
+            # -> two sheets claimed the same page (duplicate page numbers in the
+            # hierarchy). Assign max(existing)+1. [patch: SER2RJ45]
+            def _sheet_page_node(sheet_node):
+                inst = next((p for p in sheet_node
+                             if isinstance(p, list) and p and str(p[0]) == "instances"), None)
+                if inst is None:
+                    return None
+                for pb in inst[1:]:
+                    if isinstance(pb, list) and pb and str(pb[0]) == "project":
+                        pth = next((q for q in pb
+                                    if isinstance(q, list) and q and str(q[0]) == "path"), None)
+                        if pth is not None:
+                            return next((q for q in pth
+                                         if isinstance(q, list) and q and str(q[0]) == "page"), None)
+                return None
+
+            existing_pages = []
+            for it in root:
+                if isinstance(it, list) and it and str(it[0]) == "sheet":
+                    pg = _sheet_page_node(it)
+                    if pg is not None and len(pg) >= 2:
+                        try:
+                            existing_pages.append(int(str(pg[1]).strip('"')))
+                        except (ValueError, TypeError):
+                            pass
+            new_pg = _sheet_page_node(new_sheet)
+            if new_pg is not None and len(new_pg) >= 2:
+                new_pg[1] = str((max(existing_pages) + 1) if existing_pages else 2)
 
             insert_at = len(root)
             for i, it in enumerate(root):
@@ -535,7 +588,7 @@ class WireManager:
                 "sheet_uuid": sheet_uuid,
                 "subsheet_uuid": subsheet_uuid,
                 "root_uuid": root_uuid,
-                "sheet_file": sheet_file,
+                "sheet_file": sheet_file_rel,
             }
         except Exception as e:
             logger.error(f"Error adding hierarchical sheet: {e}")
@@ -564,7 +617,9 @@ class WireManager:
                     continue
                 sf = next((str(e[2]) for e in it if isinstance(e, list) and str(e[0]) == "property"
                            and len(e) >= 3 and str(e[1]) == "Sheetfile"), None)
-                if sf == fname:
+                # Sheetfile may now be a subfolder-relative path (e.g.
+                # "Sheets/Foo.kicad_sch"); match on the basename. [patch: SER2RJ45]
+                if sf is not None and Path(sf).name == fname:
                     sheet_uuid = next((str(e[1]) for e in it if isinstance(e, list)
                                        and str(e[0]) == "uuid"), None)
                     break
