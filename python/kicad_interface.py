@@ -683,6 +683,7 @@ class KiCADInterface:
             "add_hierarchical_sheet": self._handle_add_hierarchical_sheet,
             "repair_subsheet_instances": self._handle_repair_subsheet_instances,
             "move_components_to_sheet": self._handle_move_components_to_sheet,
+            "relocate_labels_to_stubs": self._handle_relocate_labels_to_stubs,
             "add_schematic_polyline": self._handle_add_schematic_polyline,
             "delete_schematic_shape": self._handle_delete_schematic_shape,
             "export_schematic_pdf": self._handle_export_schematic_pdf,
@@ -3783,6 +3784,22 @@ class KiCADInterface:
             import traceback
 
             logger.error(f"Error moving components to sheet: {e}")
+            return {"success": False, "message": str(e), "errorDetails": traceback.format_exc()}
+
+    def _handle_relocate_labels_to_stubs(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """Move flush-on-pin labels onto short outward stub wires (schematic style)."""
+        try:
+            from commands.wire_manager import WireManager
+
+            schematic_path = params.get("schematicPath")
+            if not schematic_path:
+                return {"success": False, "message": "schematicPath is required"}
+            stub_len = float(params.get("stubLength", 2.54))
+            return WireManager.relocate_labels_to_stubs(schematic_path, stub_len=stub_len)
+        except Exception as e:
+            import traceback
+
+            logger.error(f"Error relocating labels to stubs: {e}")
             return {"success": False, "message": str(e), "errorDetails": traceback.format_exc()}
 
     def _handle_add_schematic_rectangle(self, params: Dict[str, Any]) -> Dict[str, Any]:

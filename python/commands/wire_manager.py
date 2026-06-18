@@ -790,6 +790,107 @@ class WireManager:
             return {"success": False, "message": str(e)}
 
     @staticmethod
+    def relocate_labels_to_stubs(schematic_path, stub_len: float = 2.54) -> dict:
+        """[SER2RJ45 #57] Schematic-style fix: every net / global / hierarchical label
+        sitting flush on a component pin gets a short stub wire (stub_len mm) extending
+        outward from the pin, and the label is moved to the stub end and oriented
+        outward (left pin->180, right->0, up->90, down->270). Keeps connectivity (the
+        stub wire joins pin<->label, same net name). Skips labels already off-pin.
+        """
+        try:
+            import math
+            from commands.pin_locator import PinLocator
+
+            sp = Path(schematic_path)
+            loc = PinLocator()
+            tree = sexpdata.loads(sp.read_text(encoding="utf-8"))
+
+            def _ref(node):
+                return next((str(e[2]) for e in node if isinstance(e, list) and len(e) >= 3
+                             and str(e[0]) == "property" and str(e[1]) == "Reference"), None)
+
+            # 1) pin position -> outward angle, for every real component
+            symsym = Symbol("symbol")
+            pin_ang = {}
+            for node in tree:
+                if not (isinstance(node, list) and node and node[0] == symsym):
+                    continue
+                ref = _ref(node)
+                if not ref or ref.startswith("#"):
+                    continue
+                pins = loc.get_all_symbol_pins(sp, ref)          # {num: [x, y]}
+                for num, xy in pins.items():
+                    ang = loc.get_pin_angle(sp, ref, num)
+                    if ang is not None:
+                        pin_ang[(round(float(xy[0]), 2), round(float(xy[1]), 2))] = float(ang)
+
+            # 2) for each label at a pin position: add stub wire + move + orient
+            def _at(node):
+                return next((e for e in node if isinstance(e, list) and str(e[0]) == "at"), None)
+
+            LABELS = ("label", "global_label", "hierarchical_label")
+            # pass 1: collect candidates (a label sitting on a pin)
+            cands = []
+            for node in tree:
+                if not (isinstance(node, list) and node and str(node[0]) in LABELS):
+                    continue
+                a = _at(node)
+                if a is None:
+                    continue
+                key = (round(float(a[1]), 2), round(float(a[2]), 2))
+                if key not in pin_ang:
+                    continue
+                ang = pin_ang[key]
+                rad = math.radians(ang)
+                ex = round(key[0] + stub_len * math.cos(rad), 2)
+                ey = round(key[1] - stub_len * math.sin(rad), 2)   # screen Y-down
+                cands.append((node, a, key, ex, ey, ang))
+
+            # collision guard: a stub end that coincides with another stub end or with a
+            # pin would short two nets (e.g. crystal pins facing each other). Skip those —
+            # leave the label flush (connectivity is unchanged, the net is by name anyway).
+            from collections import Counter
+            endc = Counter((ex, ey) for _, _, _, ex, ey, _ in cands)
+            pinset = set(pin_ang.keys())
+            wires, moved, skipped = [], 0, 0
+            for node, a, key, ex, ey, ang in cands:
+                if endc[(ex, ey)] > 1 or (ex, ey) in pinset:
+                    skipped += 1
+                    continue
+                wires.append([
+                    Symbol("wire"),
+                    [Symbol("pts"), [Symbol("xy"), key[0], key[1]], [Symbol("xy"), ex, ey]],
+                    [Symbol("stroke"), [Symbol("width"), 0], [Symbol("type"), Symbol("default")]],
+                    [Symbol("uuid"), str(uuid.uuid4())],
+                ])
+                a[1], a[2] = ex, ey
+                # orient flag outward (snap to nearest 0/90/180/270)
+                a3 = int(round(ang / 90.0) * 90) % 360
+                if len(a) >= 4:
+                    a[3] = a3
+                else:
+                    a.append(a3)
+                moved += 1
+
+            # insert stub wires before (sheet_instances ...)
+            ins = len(tree)
+            for i, e in enumerate(tree):
+                if isinstance(e, list) and e and str(e[0]) == "sheet_instances":
+                    ins = i
+                    break
+            for w in wires:
+                tree.insert(ins, w)
+                ins += 1
+
+            sp.write_text(sexpdata.dumps(tree), encoding="utf-8")
+            return {"success": True, "labels_relocated": moved, "stubs_added": len(wires),
+                    "skipped_collisions": skipped}
+        except Exception as e:
+            import traceback
+            logger.error(traceback.format_exc())
+            return {"success": False, "message": str(e)}
+
+    @staticmethod
     def add_polyline(
         schematic_path: Path,
         points: List[List[float]],

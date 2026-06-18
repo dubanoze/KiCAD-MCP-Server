@@ -1406,3 +1406,18 @@ instance path /<root>/<sheet>; kicad-cli upgrade canary SAVEABLE.
 
 NOTE: a NEW tool — the MCP (Node) server must be RESTARTED to advertise it to clients
 (hot-reload covers only python command handlers, not the TS tool registry).
+
+## #57 — relocate_labels_to_stubs: flush labels -> stub-wire style (schematic rule)
+
+Project rule (striq): labels go on a short stub wire ~2.54mm out from the pin, NOT flush
+against it (flush global flags overlap the symbol body + pin names — "doubled labels").
+New tool: per sheet, every net/global/hierarchical label sitting on a component pin gets a
+stub wire extending outward (direction from PinLocator.get_pin_angle) and is moved to the
+stub end, oriented outward. Connectivity preserved (stub joins pin<->label, net by name).
+Collision guard: a stub end that coincides with another stub end or a pin (e.g. crystal
+pins facing each other -> would short two nets) is left flush.
+
+Files: wire_manager.py (relocate_labels_to_stubs), kicad_interface.py (handler+dispatch),
+src/tools/schematic.ts (+dist). Validated offline on SER2RJ45: 203 labels relocated across
+5 sheets, 4 crystal labels skipped, netlist identical (113 nets 1:1), canary SAVEABLE.
+NEW tool -> needs MCP (Node) restart to advertise.

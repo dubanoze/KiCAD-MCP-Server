@@ -1536,6 +1536,39 @@ edit_schematic_component and set its value to an empty string.`,
     },
   );
 
+  // Move flush-on-pin labels onto short outward stub wires (schematic drawing style)
+  server.tool(
+    "relocate_labels_to_stubs",
+    "Schematic-style cleanup: every net / global / hierarchical label sitting flush on a " +
+      "component pin is moved onto a short stub wire extending outward from the pin (so the " +
+      "flag no longer overlaps the symbol body and pin names), oriented outward. Connectivity " +
+      "is preserved (the stub joins pin<->label, same net name). Labels whose stub end would " +
+      "collide with another stub end or a pin (e.g. crystal pins facing each other) are left " +
+      "flush. Run per sheet (.kicad_sch), then verify with run_erc + a netlist.",
+    {
+      schematicPath: z.string().describe("Path to the .kicad_sch file to clean up"),
+      stubLength: z
+        .number()
+        .optional()
+        .describe("Stub wire length in mm (default 2.54)"),
+    },
+    async (args: { schematicPath: string; stubLength?: number }) => {
+      const result = await callKicadScript("relocate_labels_to_stubs", args);
+      return {
+        content: [
+          {
+            type: "text",
+            text: result.success
+              ? `Relocated ${result.labels_relocated} labels onto stubs ` +
+                `(${result.skipped_collisions} left flush to avoid collisions)`
+              : result.message || "Failed",
+          },
+        ],
+        isError: !result.success,
+      };
+    },
+  );
+
   // Add a graphic rectangle (block-diagram box)
   server.tool(
     "add_schematic_rectangle",
