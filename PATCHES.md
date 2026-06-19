@@ -1449,3 +1449,10 @@ wires off their stubs → broke connectivity (charge-pump caps, center-tap bias,
 Added a fieldsOnly param: when true, only component value/ref fields are repositioned;
 net-label flips are skipped (labels are already oriented by relocate_labels_to_stubs).
 Connectivity-safe for the stub-relocated sheets.
+
+## #59 — hide_power_references: hide #PWRxx ref designators (cosmetic)
+
+Power symbols were added with their reference (#PWR301…) visible — non-standard clutter
+(power symbols are identified by their graphic, not the ref). New tool hides the Reference
+field on every power symbol of a sheet in one call ((hide yes) into the Reference effects).
+Cosmetic only, netlist unchanged. Saves ~20 per-symbol edit_schematic_component calls/sheet.

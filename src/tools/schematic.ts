@@ -1569,6 +1569,32 @@ edit_schematic_component and set its value to an empty string.`,
     },
   );
 
+  // Hide the #PWRxx reference designators on all power symbols (cosmetic cleanup)
+  server.tool(
+    "hide_power_references",
+    "Hide the reference designator (#PWRxx) on every power symbol of a sheet — standard " +
+      "schematic cleanup, since power symbols are identified by their graphic (GND, +3V3…) " +
+      "not the ref. Purely cosmetic, no connectivity / netlist impact. Returns how many " +
+      "references were hidden.",
+    {
+      schematicPath: z.string().describe("Path to the .kicad_sch file"),
+    },
+    async (args: { schematicPath: string }) => {
+      const result = await callKicadScript("hide_power_references", args);
+      return {
+        content: [
+          {
+            type: "text",
+            text: result.success
+              ? `Hid ${result.references_hidden} power reference(s)`
+              : result.message || "Failed",
+          },
+        ],
+        isError: !result.success,
+      };
+    },
+  );
+
   // Auto-resolve overlapping component field / net-label text (connectivity-safe)
   server.tool(
     "auto_resolve_field_overlaps",

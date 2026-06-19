@@ -917,6 +917,42 @@ class WireManager:
             return {"success": False, "message": str(e)}
 
     @staticmethod
+    def hide_power_references(schematic_path) -> dict:
+        """[SER2RJ45 #59] Hide the reference designator (#PWRxx) on every power symbol —
+        standard schematic cleanup (power symbols are identified by their graphic, not the
+        ref). Purely cosmetic: adds (hide yes) to each power symbol's Reference effects,
+        no connectivity / netlist impact.
+        """
+        try:
+            sp = Path(schematic_path)
+            tree = sexpdata.loads(sp.read_text(encoding="utf-8"))
+            symsym = Symbol("symbol")
+            hidden = 0
+            for node in tree:
+                if not (isinstance(node, list) and node and node[0] == symsym):
+                    continue
+                lid = next((str(e[1]) for e in node if isinstance(e, list) and str(e[0]) == "lib_id"), "")
+                if not lid.startswith("power:"):
+                    continue
+                for prop in node:
+                    if not (isinstance(prop, list) and str(prop[0]) == "property"
+                            and len(prop) >= 2 and str(prop[1]) == "Reference"):
+                        continue
+                    eff = next((e for e in prop if isinstance(e, list) and str(e[0]) == "effects"), None)
+                    if eff is None:
+                        eff = [Symbol("effects"), [Symbol("font"), [Symbol("size"), 1.27, 1.27]]]
+                        prop.append(eff)
+                    if not any(isinstance(e, list) and str(e[0]) == "hide" for e in eff):
+                        eff.append([Symbol("hide"), Symbol("yes")])
+                        hidden += 1
+            sp.write_text(sexpdata.dumps(tree), encoding="utf-8")
+            return {"success": True, "references_hidden": hidden}
+        except Exception as e:
+            import traceback
+            logger.error(traceback.format_exc())
+            return {"success": False, "message": str(e)}
+
+    @staticmethod
     def add_polyline(
         schematic_path: Path,
         points: List[List[float]],

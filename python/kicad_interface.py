@@ -684,6 +684,7 @@ class KiCADInterface:
             "repair_subsheet_instances": self._handle_repair_subsheet_instances,
             "move_components_to_sheet": self._handle_move_components_to_sheet,
             "relocate_labels_to_stubs": self._handle_relocate_labels_to_stubs,
+            "hide_power_references": self._handle_hide_power_references,
             "add_schematic_polyline": self._handle_add_schematic_polyline,
             "delete_schematic_shape": self._handle_delete_schematic_shape,
             "export_schematic_pdf": self._handle_export_schematic_pdf,
@@ -3800,6 +3801,21 @@ class KiCADInterface:
             import traceback
 
             logger.error(f"Error relocating labels to stubs: {e}")
+            return {"success": False, "message": str(e), "errorDetails": traceback.format_exc()}
+
+    def _handle_hide_power_references(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """Hide the #PWRxx reference designators on all power symbols of a sheet."""
+        try:
+            from commands.wire_manager import WireManager
+
+            schematic_path = params.get("schematicPath")
+            if not schematic_path:
+                return {"success": False, "message": "schematicPath is required"}
+            return WireManager.hide_power_references(schematic_path)
+        except Exception as e:
+            import traceback
+
+            logger.error(f"Error hiding power references: {e}")
             return {"success": False, "message": str(e), "errorDetails": traceback.format_exc()}
 
     def _handle_add_schematic_rectangle(self, params: Dict[str, Any]) -> Dict[str, Any]:
