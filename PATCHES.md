@@ -1421,3 +1421,15 @@ Files: wire_manager.py (relocate_labels_to_stubs), kicad_interface.py (handler+d
 src/tools/schematic.ts (+dist). Validated offline on SER2RJ45: 203 labels relocated across
 5 sheets, 4 crystal labels skipped, netlist identical (113 nets 1:1), canary SAVEABLE.
 NEW tool -> needs MCP (Node) restart to advertise.
+
+## #57b — relocate_labels_to_stubs: correct outward direction + justify (fix)
+
+Two bugs in #57 found on U1 (CH32V317WCU6, 68-pin): (1) direction used
+get_pin_angle, which returns the pin's draw angle (often INTO the body) → stubs/
+labels were pushed over the symbol; and corner pins picked the wrong axis. Now the
+outward direction is the nearest pin-bbox EDGE of the symbol (left/right/top/bottom;
+2-pin inline parts handled by their axis). (2) the moved label kept justify "left",
+so left/down labels rendered their text back over the body — now justify follows
+orientation (right for 180/270, left for 0/90), same rule as add_schematic_net_label.
+Re-validated: U1 left+right labels sit cleanly outside the symbol, netlist 113 1:1,
+MCU skips 11→2.

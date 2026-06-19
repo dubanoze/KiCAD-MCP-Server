@@ -809,7 +809,11 @@ class WireManager:
                 return next((str(e[2]) for e in node if isinstance(e, list) and len(e) >= 3
                              and str(e[0]) == "property" and str(e[1]) == "Reference"), None)
 
-            # 1) pin position -> outward angle, for every real component
+            # 1) pin position -> OUTWARD angle (away from the symbol body), for every
+            # real component. Computed as the direction from the symbol's placement
+            # origin toward the pin — robust across pin-angle conventions (get_pin_angle
+            # returns the pin's draw direction, which for some symbols points INTO the
+            # body and would push the stub/label over the symbol).
             symsym = Symbol("symbol")
             pin_ang = {}
             for node in tree:
@@ -819,10 +823,22 @@ class WireManager:
                 if not ref or ref.startswith("#"):
                     continue
                 pins = loc.get_all_symbol_pins(sp, ref)          # {num: [x, y]}
+                if not pins:
+                    continue
+                xs = [float(xy[0]) for xy in pins.values()]
+                ys = [float(xy[1]) for xy in pins.values()]
+                minx, maxx, miny, maxy = min(xs), max(xs), min(ys), max(ys)
+                cx, cy = (minx + maxx) / 2.0, (miny + maxy) / 2.0
                 for num, xy in pins.items():
-                    ang = loc.get_pin_angle(sp, ref, num)
-                    if ang is not None:
-                        pin_ang[(round(float(xy[0]), 2), round(float(xy[1]), 2))] = float(ang)
+                    px, py = float(xy[0]), float(xy[1])
+                    if (maxx - minx) < 0.01:             # vertical 2-pin part -> up / down
+                        ang = 90.0 if py < cy else 270.0
+                    elif (maxy - miny) < 0.01:           # horizontal 2-pin part -> left / right
+                        ang = 180.0 if px < cx else 0.0
+                    else:                                # 2-D symbol -> nearest pin-bbox edge
+                        d = {180.0: px - minx, 0.0: maxx - px, 90.0: py - miny, 270.0: maxy - py}
+                        ang = min(d, key=d.get)
+                    pin_ang[(round(px, 2), round(py, 2))] = ang
 
             # 2) for each label at a pin position: add stub wire + move + orient
             def _at(node):
@@ -870,6 +886,16 @@ class WireManager:
                     a[3] = a3
                 else:
                     a.append(a3)
+                # orientation-aware horizontal justify so text reads outward
+                # (KiCad flips alignment for 180/270; same rule as add_schematic_net_label)
+                jh = Symbol("right") if a3 in (180, 270) else Symbol("left")
+                eff = next((e for e in node if isinstance(e, list) and str(e[0]) == "effects"), None)
+                if eff is not None:
+                    jt = next((e for e in eff if isinstance(e, list) and str(e[0]) == "justify"), None)
+                    if jt is None:
+                        eff.append([Symbol("justify"), jh])
+                    else:
+                        jt[:] = [Symbol("justify"), jh]
                 moved += 1
 
             # insert stub wires before (sheet_instances ...)
