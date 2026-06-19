@@ -1581,8 +1581,15 @@ edit_schematic_component and set its value to an empty string.`,
       schematicPath: z.string().describe("Path to the .kicad_sch file"),
       dryRun: z.boolean().optional().describe("Only return the planned moves, don't apply"),
       maxRounds: z.number().optional().describe("Max de-conflict rounds (default 3)"),
+      fieldsOnly: z
+        .boolean()
+        .optional()
+        .describe(
+          "Only move component value/ref fields; skip net-label justify flips. Use this " +
+            "when labels are already on stub wires (flipping would move them off and break nets).",
+        ),
     },
-    async (args: { schematicPath: string; dryRun?: boolean; maxRounds?: number }) => {
+    async (args: { schematicPath: string; dryRun?: boolean; maxRounds?: number; fieldsOnly?: boolean }) => {
       const result = await callKicadScript("auto_resolve_field_overlaps", args);
       return {
         content: [

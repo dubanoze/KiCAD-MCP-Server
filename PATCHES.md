@@ -1441,3 +1441,11 @@ The connectivity-safe field/label de-overlap handler existed in the Python dispa
 not call it. Added the server.tool() schema (schematicPath, dryRun?, maxRounds?) +
 dist build. Used to tidy Serial/Ethernet/LED/Power after the hierarchy refactor +
 stub relocation re-laid the labels.
+
+## #58b — auto_resolve_field_overlaps: add fieldsOnly mode
+
+The label-flip step (set_schematic_label_orientation) moved net labels that sit on stub
+wires off their stubs → broke connectivity (charge-pump caps, center-tap bias, COMP_RC).
+Added a fieldsOnly param: when true, only component value/ref fields are repositioned;
+net-label flips are skipped (labels are already oriented by relocate_labels_to_stubs).
+Connectivity-safe for the stub-relocated sheets.

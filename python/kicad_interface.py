@@ -6307,6 +6307,9 @@ class KiCADInterface:
                 return {"success": False, "message": f"Schematic not found: {schematic_path}"}
             dry_run = bool(params.get("dryRun", False))
             max_rounds = int(params.get("maxRounds", 3))
+            # fieldsOnly: skip net-label justify flips — those can move labels off their
+            # stub wires and break connectivity; only reposition component value/ref text.
+            fields_only = bool(params.get("fieldsOnly", False))
 
             before = find_overlapping_elements(Path(schematic_path))["totalOverlaps"]
             applied_fields = 0
@@ -6314,7 +6317,7 @@ class KiCADInterface:
             rounds = 0
             for _ in range(max_rounds):
                 plan = plan_field_deconflict(Path(schematic_path))
-                if not plan["fieldMoves"] and not plan["labelFlips"]:
+                if not plan["fieldMoves"] and (fields_only or not plan["labelFlips"]):
                     break
                 if dry_run:
                     return {
@@ -6334,16 +6337,17 @@ class KiCADInterface:
                     if r.get("success"):
                         applied_fields += 1
                         round_applied += 1
-                for f in plan["labelFlips"]:
-                    r = self._handle_set_schematic_label_orientation({
-                        "schematicPath": schematic_path,
-                        "netName": f["netName"],
-                        "position": {"x": f["x"], "y": f["y"]},
-                        "justify": f["justify"],
-                    })
-                    if r.get("success"):
-                        applied_flips += 1
-                        round_applied += 1
+                if not fields_only:
+                    for f in plan["labelFlips"]:
+                        r = self._handle_set_schematic_label_orientation({
+                            "schematicPath": schematic_path,
+                            "netName": f["netName"],
+                            "position": {"x": f["x"], "y": f["y"]},
+                            "justify": f["justify"],
+                        })
+                        if r.get("success"):
+                            applied_flips += 1
+                            round_applied += 1
                 if round_applied == 0:
                     break
 
