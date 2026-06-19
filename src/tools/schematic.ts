@@ -1569,6 +1569,35 @@ edit_schematic_component and set its value to an empty string.`,
     },
   );
 
+  // Auto-resolve overlapping component field / net-label text (connectivity-safe)
+  server.tool(
+    "auto_resolve_field_overlaps",
+    "Plan and apply connectivity-safe fixes for overlapping field / net-label text on a " +
+      "schematic: move component Reference/Value fields to the side of their symbol and flip " +
+      "net-label justify outward. Only field positions and label justify change — wires, pins, " +
+      "net names and instances are untouched, so connectivity is preserved. Iterates up to " +
+      "maxRounds. Pass dryRun to preview the plan without applying it.",
+    {
+      schematicPath: z.string().describe("Path to the .kicad_sch file"),
+      dryRun: z.boolean().optional().describe("Only return the planned moves, don't apply"),
+      maxRounds: z.number().optional().describe("Max de-conflict rounds (default 3)"),
+    },
+    async (args: { schematicPath: string; dryRun?: boolean; maxRounds?: number }) => {
+      const result = await callKicadScript("auto_resolve_field_overlaps", args);
+      return {
+        content: [
+          {
+            type: "text",
+            text: result.success
+              ? result.message || "Resolved field/label overlaps"
+              : result.message || "Failed",
+          },
+        ],
+        isError: !result.success,
+      };
+    },
+  );
+
   // Add a graphic rectangle (block-diagram box)
   server.tool(
     "add_schematic_rectangle",

@@ -1433,3 +1433,11 @@ so left/down labels rendered their text back over the body — now justify follo
 orientation (right for 180/270, left for 0/90), same rule as add_schematic_net_label.
 Re-validated: U1 left+right labels sit cleanly outside the symbol, netlist 113 1:1,
 MCU skips 11→2.
+
+## #58 — advertise auto_resolve_field_overlaps to the client (TS schema)
+
+The connectivity-safe field/label de-overlap handler existed in the Python dispatch
+(_handle_auto_resolve_field_overlaps) but had no TS tool definition, so clients could
+not call it. Added the server.tool() schema (schematicPath, dryRun?, maxRounds?) +
+dist build. Used to tidy Serial/Ethernet/LED/Power after the hierarchy refactor +
+stub relocation re-laid the labels.
